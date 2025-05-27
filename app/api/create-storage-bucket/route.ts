@@ -1,44 +1,60 @@
 import { createClient } from "@supabase/supabase-js"
 import { NextResponse } from "next/server"
 
-export async function GET() {
+export async function POST() {
   try {
-    // Create a Supabase client using the environment variables
+    // Use service role key for admin operations
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
     if (!supabaseUrl || !supabaseServiceKey) {
-      return NextResponse.json({ error: "Missing Supabase credentials in environment variables" }, { status: 500 })
+      return NextResponse.json({ error: "Missing Supabase credentials" }, { status: 500 })
     }
 
-    // Use the service role key for admin operations
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Create the documents bucket
+    // Create the documents bucket with public access
     const { data: bucketData, error: bucketError } = await supabase.storage.createBucket("documents", {
-      public: false,
+      public: true, // This is crucial for downloads to work
+      allowedMimeTypes: [
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "text/plain",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ],
       fileSizeLimit: 52428800, // 50MB
     })
 
     if (bucketError) {
-      console.error("Error creating bucket:", bucketError)
-      return NextResponse.json({ error: `Failed to create bucket: ${bucketError.message}` }, { status: 500 })
+      // If bucket already exists, try to update it to be public
+      if (bucketError.message.includes("already exists")) {
+        const { error: updateError } = await supabase.storage.updateBucket("documents", {
+          public: true,
+        })
+
+        if (updateError) {
+          console.error("Error updating bucket:", updateError)
+        }
+
+        return NextResponse.json({
+          message: "Storage bucket already exists and has been configured for public access",
+          bucket: "documents",
+        })
+      }
+      throw bucketError
     }
 
-    // Create policies for the bucket
-    // Note: Policy creation requires direct SQL or dashboard access
-    // This API can only create the bucket itself
-
     return NextResponse.json({
-      success: true,
-      message: "Storage bucket 'documents' created successfully",
-      data: bucketData,
+      message: "Storage bucket created successfully with public access enabled",
+      bucket: bucketData,
     })
-  } catch (error) {
-    console.error("Unexpected error:", error)
-    return NextResponse.json(
-      { error: `Unexpected error: ${error instanceof Error ? error.message : String(error)}` },
-      { status: 500 },
-    )
+  } catch (error: any) {
+    console.error("Storage bucket creation error:", error)
+    return NextResponse.json({ error: error.message || "Failed to create storage bucket" }, { status: 500 })
   }
 }

@@ -28,7 +28,6 @@ export default function ClientInbox() {
   const [replyOpen, setReplyOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
   const [sendingReply, setSendingReply] = useState(false)
-  const [seedingMessages, setSeedingMessages] = useState(false)
   const router = useRouter()
   const supabase = createClientComponentClient()
   const { toast } = useToast()
@@ -241,38 +240,6 @@ export default function ClientInbox() {
     }
   }
 
-  const seedSampleMessages = async () => {
-    setSeedingMessages(true)
-    try {
-      const response = await fetch("/api/seed-messages", {
-        method: "POST",
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to create sample messages")
-      }
-
-      toast({
-        title: "Sample Messages Created",
-        description: `${data.count} sample messages have been added to your inbox.`,
-      })
-
-      // Refresh the messages
-      await fetchMessages()
-    } catch (err: any) {
-      console.error("Error seeding messages:", err)
-      toast({
-        title: "Error",
-        description: err.message || "Failed to create sample messages",
-        variant: "destructive",
-      })
-    } finally {
-      setSeedingMessages(false)
-    }
-  }
-
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
     const now = new Date()
@@ -332,11 +299,6 @@ export default function ClientInbox() {
               <RefreshCw className="h-4 w-4" />
               Refresh
             </Button>
-            {messages.length === 0 && (
-              <Button size="sm" onClick={seedSampleMessages} disabled={seedingMessages}>
-                {seedingMessages ? "Creating..." : "Create Sample Messages"}
-              </Button>
-            )}
           </div>
         </div>
       </header>
@@ -376,11 +338,6 @@ export default function ClientInbox() {
                       <p className="mt-1 text-sm text-gray-500">
                         {messages.length === 0 ? "Your inbox is empty." : "No messages match your search criteria."}
                       </p>
-                      {messages.length === 0 && (
-                        <Button onClick={seedSampleMessages} className="mt-4" disabled={seedingMessages}>
-                          {seedingMessages ? "Creating..." : "Create Sample Messages"}
-                        </Button>
-                      )}
                     </div>
                   ) : (
                     <ul className="divide-y">

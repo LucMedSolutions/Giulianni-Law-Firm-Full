@@ -5,7 +5,7 @@ import type React from "react"
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { ArrowLeft, Save, Loader2, Search, X, RefreshCw, UserPlus, AlertCircle, Database } from "lucide-react"
+import { ArrowLeft, Save, Loader2, Search, X, RefreshCw, UserPlus, Database } from "lucide-react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,7 +22,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 export default function NewCasePage() {
@@ -449,19 +448,6 @@ export default function NewCasePage() {
           Debug Database
         </Button>
       </div>
-
-      {debugInfo && (
-        <Alert className="mb-4 bg-blue-50 border-blue-200">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Debug Information</AlertTitle>
-          <AlertDescription>
-            <pre className="text-xs whitespace-pre-wrap max-h-32 overflow-y-auto">{debugInfo}</pre>
-            <Button variant="outline" size="sm" className="mt-2" onClick={() => setDebugInfo(null)}>
-              Clear Debug Info
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
 
       <Card>
         <CardHeader>

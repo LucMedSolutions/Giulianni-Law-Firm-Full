@@ -169,16 +169,58 @@ export default function UploadDocument() {
 
       if (docError) throw docError
 
-      toast({
-        title: "Success",
-        description: "Document uploaded successfully",
-      })
+      // Call backend API to parse the document
+      try {
+        console.log(`Attempting to call /parse-document/ for: ${file.name}, URL: ${urlData.publicUrl}, Query: ${notes}`)
+        const apiResponse = await fetch('http://localhost:8000/parse-document/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            file_url: urlData.publicUrl,
+            filename: file.name, 
+            user_query: notes,
+          }),
+        });
 
-      // Redirect to documents page
-      router.push("/client-dashboard/documents")
+        if (apiResponse.ok) {
+          const result = await apiResponse.json();
+          const taskId = result.task_id;
+          console.log("Received task_id:", taskId);
+          toast({
+            title: "Processing Started",
+            description: "Document uploaded and AI processing has been initiated.",
+          });
+          
+          // Clear form fields
+          setFile(null);
+          setNotes("");
+          setSelectedCase("");
+          // TODO: router.push(`/client-dashboard/tasks/${taskId}`); // Future redirect for task status page
+
+          // For now, redirect to documents list after a short delay to show toast
+          setTimeout(() => {
+            router.push("/client-dashboard/documents");
+          }, 2000);
+
+        } else {
+          const errorResult = await apiResponse.json().catch(() => ({ detail: "Unknown error starting AI processing." }));
+          const errorMessage = errorResult.detail || errorResult.message || `Failed to start AI processing (status ${apiResponse.status})`;
+          console.error("Error from /parse-document/ API:", errorMessage, errorResult);
+          throw new Error(errorMessage);
+        }
+      } catch (apiError: any) {
+        console.error("Error calling /parse-document/ API or processing its response:", apiError);
+        // Let the outer catch handle displaying the error toast and setting error state
+        // but ensure we have a specific message if possible.
+        throw new Error(apiError.message || "Failed to communicate with AI backend or process its response.");
+      }
+
     } catch (err: any) {
-      console.error("Error uploading document:", err)
-      setError(err.message || "Failed to upload document")
+      // This outer catch now handles errors from Supabase upload OR the /parse-document/ API call
+      console.error("Error during document upload or AI processing initiation:", err);
+      setError(err.message || "An unexpected error occurred.");
       toast({
         title: "Error",
         description: err.message || "Failed to upload document",

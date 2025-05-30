@@ -5,26 +5,25 @@ import { useRouter } from "next/navigation"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { CheckCircle, XCircle, AlertCircle, Database, ExternalLink } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Database, ExternalLink, RefreshCw } from "lucide-react"
 
 export default function StoragePage() {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [bucketExists, setBucketExists] = useState(false)
   const [bucketPublic, setBucketPublic] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [statusMessage, setStatusMessage] = useState<string>("")
   const router = useRouter()
   const supabase = createClientComponentClient()
 
   useEffect(() => {
-    checkStorageStatus()
+    checkAuth()
   }, [])
 
-  const checkStorageStatus = async () => {
-    setLoading(true)
-    setError(null)
-
+  const checkAuth = async () => {
     try {
       // Check if user is authenticated
       const {
@@ -49,23 +48,43 @@ export default function StoragePage() {
         return
       }
 
-      // Check if documents bucket exists
-      const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets()
+      // Now check storage status
+      checkStorageStatus()
+    } catch (err: any) {
+      console.error("Error checking auth:", err)
+      setError(err.message || "Failed to verify authentication")
+      setLoading(false)
+    }
+  }
 
-      if (bucketsError) {
-        console.error("Error listing buckets:", bucketsError)
-        setBucketExists(false)
-        setBucketPublic(false)
-      } else {
-        const documentsBucket = buckets.find((bucket) => bucket.name === "documents")
-        setBucketExists(!!documentsBucket)
-        setBucketPublic(documentsBucket?.public || false)
+  const checkStorageStatus = async () => {
+    setChecking(true)
+    setError(null)
+
+    try {
+      const response = await fetch("/api/check-storage-status")
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+
+      const result = await response.json()
+
+      setBucketExists(result.bucketExists || false)
+      setBucketPublic(result.bucketPublic || false)
+      setStatusMessage(result.message || "")
+
+      if (result.error) {
+        setError(result.error)
       }
     } catch (err: any) {
       console.error("Error checking storage status:", err)
-      setError(err.message || "Failed to check storage status")
+      setError(`Failed to check storage status: ${err.message}`)
+      setBucketExists(false)
+      setBucketPublic(false)
     } finally {
       setLoading(false)
+      setChecking(false)
     }
   }
 
@@ -88,6 +107,11 @@ export default function StoragePage() {
       setSuccess(result.message)
       setBucketExists(true)
       setBucketPublic(true)
+
+      // Refresh status after a short delay
+      setTimeout(() => {
+        checkStorageStatus()
+      }, 1000)
     } catch (err: any) {
       console.error("Error creating storage bucket:", err)
       setError(err.message || "Failed to create storage bucket")
@@ -122,6 +146,12 @@ export default function StoragePage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
+              {statusMessage && (
+                <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
+                  <p className="text-sm text-blue-700">{statusMessage}</p>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="flex items-center space-x-2">
                   {bucketExists ? (
@@ -197,8 +227,18 @@ export default function StoragePage() {
                     {creating ? "Setting up..." : "Setup Storage Bucket"}
                   </Button>
                 )}
-                <Button variant="outline" onClick={checkStorageStatus}>
-                  Refresh Status
+                <Button variant="outline" onClick={checkStorageStatus} disabled={checking}>
+                  {checking ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Checking...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Refresh Status
+                    </>
+                  )}
                 </Button>
                 <Button variant="outline" asChild>
                   <a
@@ -243,10 +283,10 @@ export default function StoragePage() {
               <div>
                 <h3 className="text-sm font-medium text-gray-900">Troubleshooting</h3>
                 <ul className="text-sm text-gray-600 mt-1 space-y-1">
-                  <li>• If downloads fail, ensure the bucket has public access enabled</li>
-                  <li>• Check that files are being uploaded to the correct bucket path</li>
-                  <li>• Verify storage URLs are properly formatted</li>
-                  <li>• Use the "Refresh link" button on documents if URLs are outdated</li>
+                  <li>• If status shows "missing" after creation, click "Refresh Status"</li>
+                  <li>• Check that the API endpoints are working properly</li>
+                  <li>• Verify Supabase service role key is configured</li>
+                  <li>• If issues persist, check the Supabase dashboard directly</li>
                 </ul>
               </div>
 

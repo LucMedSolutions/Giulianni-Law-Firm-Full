@@ -34,15 +34,45 @@ export default function DeleteCaseButton({
   const [isOpen, setIsOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [debugInfo, setDebugInfo] = useState<any>(null)
   const router = useRouter()
   const { toast } = useToast()
+
+  const checkPermissions = async () => {
+    try {
+      const response = await fetch("/api/debug-permissions")
+      const data = await response.json()
+      setDebugInfo(data)
+      console.log("Permission check:", data)
+
+      if (!data.currentUser?.canDelete) {
+        setError(
+          `Insufficient permissions. Role: ${data.currentUser?.role}, Staff Role: ${data.currentUser?.staff_role}`,
+        )
+        return false
+      }
+      return true
+    } catch (error: any) {
+      console.error("Permission check failed:", error)
+      setError("Failed to check permissions")
+      return false
+    }
+  }
 
   const handleDelete = async () => {
     setIsDeleting(true)
     setError(null)
 
     try {
-      const response = await fetch("/api/delete-case", {
+      // First check permissions
+      const hasPermission = await checkPermissions()
+      if (!hasPermission) {
+        return
+      }
+
+      console.log("Attempting to delete case:", caseId)
+
+      const response = await fetch("/api/force-delete-case", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -51,9 +81,10 @@ export default function DeleteCaseButton({
       })
 
       const data = await response.json()
+      console.log("Delete response:", data)
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to delete case")
+        throw new Error(data.error || `HTTP ${response.status}: ${data.details || "Unknown error"}`)
       }
 
       toast({
@@ -62,7 +93,7 @@ export default function DeleteCaseButton({
       })
 
       // Redirect to the appropriate dashboard
-      router.push("/staff-dashboard")
+      router.push("/staff-dashboard/cases")
       router.refresh()
     } catch (error: any) {
       console.error("Error deleting case:", error)
@@ -94,7 +125,18 @@ export default function DeleteCaseButton({
             </AlertDialogDescription>
           </AlertDialogHeader>
 
-          {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{error}</div>}
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+              <p className="font-semibold">Error:</p>
+              <p>{error}</p>
+              {debugInfo && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-sm">Debug Info</summary>
+                  <pre className="text-xs mt-1 overflow-auto">{JSON.stringify(debugInfo, null, 2)}</pre>
+                </details>
+              )}
+            </div>
+          )}
 
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>

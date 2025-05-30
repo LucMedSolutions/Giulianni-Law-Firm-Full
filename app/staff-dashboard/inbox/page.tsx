@@ -55,16 +55,25 @@ export default function InboxPage() {
 
         setUserData(user)
 
-        // Get notifications for this user
+        // Get notifications for this user - avoid duplicates by using a more specific query
         const { data: notificationsData, error: notificationsError } = await supabase
           .from("notifications")
           .select("*")
-          .or(`is_global.eq.true,target_role.is.null,target_role.eq.${user.role}`)
+          .or(`is_global.eq.true,target_role.eq.${user.role},target_role.is.null`)
           .order("created_at", { ascending: false })
 
         if (notificationsError) {
           throw notificationsError
         }
+
+        // Remove any potential duplicates by ID
+        const uniqueNotifications =
+          notificationsData?.reduce((acc, notification) => {
+            if (!acc.find((n) => n.id === notification.id)) {
+              acc.push(notification)
+            }
+            return acc
+          }, [] as any[]) || []
 
         // Get read status for these notifications
         const { data: userNotifications, error: userNotificationsError } = await supabase
@@ -83,7 +92,7 @@ export default function InboxPage() {
         }, {})
 
         // Combine the data
-        const formattedNotifications = (notificationsData || []).map((notification) => ({
+        const formattedNotifications = uniqueNotifications.map((notification) => ({
           id: notification.id,
           title: notification.title,
           message: notification.message,

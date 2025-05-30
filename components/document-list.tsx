@@ -55,16 +55,17 @@ export default function DocumentList({ documents, caseId, isStaff, onDocumentDel
         throw new Error("Document not found")
       }
 
+      // Construct storage path from case ID and filename
+      const storagePath = `${caseId}/${filename}`
+
       // Try to get a new signed URL from the storage
       const { data: signedUrlData, error: urlError } = await supabase.storage
         .from("documents")
-        .createSignedUrl(document.storage_path || `${caseId}/${filename}`, 3600) // 1 hour expiry
+        .createSignedUrl(storagePath, 3600) // 1 hour expiry
 
       if (urlError) {
         // If signed URL fails, try to get public URL
-        const { data: publicUrlData } = supabase.storage
-          .from("documents")
-          .getPublicUrl(document.storage_path || `${caseId}/${filename}`)
+        const { data: publicUrlData } = supabase.storage.from("documents").getPublicUrl(storagePath)
 
         if (publicUrlData?.publicUrl) {
           // Update the document with new URL
@@ -158,7 +159,7 @@ export default function DocumentList({ documents, caseId, isStaff, onDocumentDel
       // Get the document details
       const { data: document, error: fetchError } = await supabase
         .from("documents")
-        .select("storage_path, storage_url")
+        .select("filename, storage_url")
         .eq("id", documentId)
         .single()
 
@@ -166,14 +167,20 @@ export default function DocumentList({ documents, caseId, isStaff, onDocumentDel
         throw new Error(`Error fetching document: ${fetchError.message}`)
       }
 
-      // Try to delete from storage if we have a storage path
-      if (document.storage_path) {
-        const { error: storageError } = await supabase.storage.from("documents").remove([document.storage_path])
+      // Construct storage path from case ID and filename
+      const storagePath = `${caseId}/${document.filename}`
+
+      // Try to delete from storage
+      try {
+        const { error: storageError } = await supabase.storage.from("documents").remove([storagePath])
 
         if (storageError) {
           console.error("Error deleting file from storage:", storageError)
           // Continue anyway to delete the database record
         }
+      } catch (storageErr) {
+        console.error("Storage delete failed, continuing with record deletion:", storageErr)
+        // Continue with database deletion even if storage deletion fails
       }
 
       // Delete the document record

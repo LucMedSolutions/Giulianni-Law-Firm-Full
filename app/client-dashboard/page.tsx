@@ -56,16 +56,38 @@ export default function ClientDashboard() {
 
         setUserData(user)
 
-        // Get client cases
-        const { data: clientCases, error: casesError } = await supabase
+        // Get client cases - try multiple matching strategies
+        let clientCases: any[] = []
+
+        // First try exact match on client_name
+        const { data: exactMatches, error: exactError } = await supabase
           .from("cases")
           .select("*")
           .eq("client_name", user.full_name)
           .order("created_at", { ascending: false })
 
-        if (casesError) {
-          throw casesError
+        if (exactError) {
+          console.error("Error fetching exact matches:", exactError)
+        } else {
+          clientCases = exactMatches || []
         }
+
+        // If no exact matches, try case-insensitive search
+        if (clientCases.length === 0) {
+          const { data: fuzzyMatches, error: fuzzyError } = await supabase
+            .from("cases")
+            .select("*")
+            .ilike("client_name", user.full_name)
+            .order("created_at", { ascending: false })
+
+          if (fuzzyError) {
+            console.error("Error fetching fuzzy matches:", fuzzyError)
+          } else {
+            clientCases = fuzzyMatches || []
+          }
+        }
+
+        console.log("Client cases found:", clientCases.length, "for user:", user.full_name, "using name matching")
 
         setCases(clientCases || [])
 

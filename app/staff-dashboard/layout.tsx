@@ -191,7 +191,7 @@ export default function StaffDashboardLayout({ children }: { children: React.Rea
                 <Link
                   href="/staff-dashboard/cases"
                   className={`block px-4 py-2 font-medium ${
-                    pathname === "/staff-dashboard/cases" ? "text-gray-900" : "text-gray-600"
+                    pathname.startsWith("/staff-dashboard/cases") ? "text-gray-900" : "text-gray-600"
                   } hover:bg-gray-100`}
                 >
                   CASES
@@ -201,7 +201,7 @@ export default function StaffDashboardLayout({ children }: { children: React.Rea
                 <Link
                   href="/staff-dashboard/documents"
                   className={`block px-4 py-2 font-medium ${
-                    pathname === "/staff-dashboard/documents" ? "text-gray-900" : "text-gray-600"
+                    pathname.startsWith("/staff-dashboard/documents") ? "text-gray-900" : "text-gray-600"
                   } hover:bg-gray-100`}
                 >
                   DOCUMENTS
@@ -211,7 +211,7 @@ export default function StaffDashboardLayout({ children }: { children: React.Rea
                 <Link
                   href="/staff-dashboard/inbox"
                   className={`block px-4 py-2 font-medium ${
-                    pathname === "/staff-dashboard/inbox" ? "text-gray-900" : "text-gray-600"
+                    pathname.startsWith("/staff-dashboard/inbox") ? "text-gray-900" : "text-gray-600"
                   } hover:bg-gray-100`}
                 >
                   INBOX

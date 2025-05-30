@@ -33,7 +33,6 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
   const [availableBuckets, setAvailableBuckets] = useState<string[]>([])
   const [loadingCases, setLoadingCases] = useState(true)
   const [loadingStorage, setLoadingStorage] = useState(true)
-
   const supabase = createClient()
 
   useEffect(() => {
@@ -129,94 +128,24 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
     setMessage(null)
 
     try {
-      // Get the selected case data
-      const selectedCase = cases.find((c) => c.id === selectedCaseId)
-      if (!selectedCase) {
-        throw new Error("Selected case not found")
+      // Create form data for the API
+      const formData = new FormData()
+      formData.append("file", file)
+      formData.append("caseId", selectedCaseId)
+
+      // Call the server-side upload API
+      const response = await fetch("/api/upload-document", {
+        method: "POST",
+        body: formData,
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || "Upload failed")
       }
 
-      // Generate filename with case number
-      const fileExt = file.name.split(".").pop()
-      const timestamp = Date.now()
-      const randomId = Math.random().toString(36).substring(2, 8)
-      const fileName = `${selectedCase.case_number}/${timestamp}-${randomId}.${fileExt}`
-
-      console.log("Attempting to upload file:", fileName)
-      console.log("Available buckets:", availableBuckets)
-
-      let uploadSuccess = false
-      let uploadData = null
-      let usedBucket = null
-      let lastError = null
-
-      // Try to upload to each available bucket
-      for (const bucketName of availableBuckets) {
-        try {
-          console.log(`Trying to upload to bucket: ${bucketName}`)
-
-          const { data, error } = await supabase.storage.from(bucketName).upload(fileName, file, {
-            cacheControl: "3600",
-            upsert: false,
-          })
-
-          if (error) {
-            console.error(`Upload to ${bucketName} failed:`, error)
-            lastError = error
-            continue
-          }
-
-          if (data) {
-            console.log(`Successfully uploaded to ${bucketName}`)
-            uploadData = data
-            usedBucket = bucketName
-            uploadSuccess = true
-            break
-          }
-        } catch (error) {
-          console.error(`Error uploading to ${bucketName}:`, error)
-          lastError = error
-          continue
-        }
-      }
-
-      if (!uploadSuccess) {
-        const errorMessage = lastError?.message || "Unknown error"
-        throw new Error(`Failed to upload to any available bucket. Last error: ${errorMessage}`)
-      }
-
-      if (!uploadData || !usedBucket) {
-        throw new Error("Upload completed but no data returned")
-      }
-
-      // Save document metadata to database
-      const { data: documentData, error: dbError } = await supabase
-        .from("documents")
-        .insert({
-          case_id: selectedCaseId,
-          file_name: file.name,
-          file_path: uploadData.path,
-          file_size: file.size,
-          file_type: file.type,
-          bucket_name: usedBucket,
-          status: "pending",
-          upload_time: new Date().toISOString(),
-        })
-        .select()
-        .single()
-
-      if (dbError) {
-        console.error("Database error:", dbError)
-        // Try to clean up the uploaded file
-        try {
-          await supabase.storage.from(usedBucket).remove([uploadData.path])
-          console.log("Cleaned up uploaded file after database error")
-        } catch (cleanupError) {
-          console.error("Failed to cleanup uploaded file:", cleanupError)
-        }
-        throw new Error(`Failed to save document metadata: ${dbError.message}`)
-      }
-
-      setMessage({ type: "success", text: "Document uploaded successfully!" })
+      setMessage({ type: "success", text: result.message || "Document uploaded successfully!" })
       setFile(null)
 
       // Reset file input
@@ -225,7 +154,7 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
 
       // Call callback if provided
       if (onUploadComplete) {
-        onUploadComplete(documentData)
+        onUploadComplete(result.document)
       }
     } catch (error: any) {
       console.error("Upload error:", error)

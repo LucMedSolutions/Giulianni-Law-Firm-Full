@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import DocumentUpload from "@/components/document-upload"
 import DocumentList from "@/components/document-list"
@@ -16,24 +15,22 @@ export default function CaseDocuments({ caseId, caseNumber, isStaff }: CaseDocum
   const [documents, setDocuments] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const supabase = createClientComponentClient()
 
   const fetchDocuments = async () => {
     setLoading(true)
     setError(null)
 
     try {
-      const { data, error } = await supabase
-        .from("documents")
-        .select("*")
-        .eq("case_id", caseId)
-        .order("upload_time", { ascending: false })
+      // Use a server-side API to fetch documents instead of client-side Supabase
+      const response = await fetch(`/api/get-case-documents?caseId=${caseId}`)
 
-      if (error) {
-        throw error
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || `HTTP ${response.status}`)
       }
 
-      setDocuments(data || [])
+      const data = await response.json()
+      setDocuments(data.documents || [])
     } catch (err: any) {
       setError(err.message || "Failed to load documents")
       console.error("Error fetching documents:", err)
@@ -60,7 +57,12 @@ export default function CaseDocuments({ caseId, caseNumber, isStaff }: CaseDocum
           {loading ? (
             <div className="py-4 text-center">Loading documents...</div>
           ) : error ? (
-            <div className="py-4 text-center text-red-500">{error}</div>
+            <div className="py-4 text-center text-red-500">
+              Error: {error}
+              <button onClick={fetchDocuments} className="ml-2 text-blue-500 underline">
+                Retry
+              </button>
+            </div>
           ) : (
             <DocumentList documents={documents} caseId={caseId} isStaff={isStaff} onDocumentDeleted={fetchDocuments} />
           )}

@@ -1,11 +1,11 @@
-"use client"
+"use client";
 
-import { useState, useEffect } from "react"
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import Link from "next/link"
-import { Users, Bell, FileText, Settings } from "lucide-react"
+import { useState, useEffect } from "react";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import { Users, Bell, FileText, Settings } from "lucide-react";
 
 export default function AdminDashboardPage() {
   const [stats, setStats] = useState({
@@ -13,51 +13,52 @@ export default function AdminDashboardPage() {
     cases: 0,
     notifications: 0,
     logs: 0,
-  })
-  const [loading, setLoading] = useState(true)
-  const supabase = createClientComponentClient()
+  });
+  const [loading, setLoading] = useState(true);
+  const supabase = createClientComponentClient();
 
   useEffect(() => {
     async function fetchStats() {
-      setLoading(true)
+      setLoading(true);
       try {
         // Fetch user count
         const { count: userCount, error: userError } = await supabase
           .from("users")
-          .select("*", { count: "exact", head: true })
+          .select("*", { count: "exact", head: true });
 
-        if (userError) throw userError
+        if (userError) throw userError;
 
         // Fetch case count (assuming you have a cases table)
         const { count: caseCount, error: caseError } = await supabase
           .from("cases")
-          .select("*", { count: "exact", head: true })
+          .select("*", { count: "exact", head: true });
 
         // Fetch notification count
-        const { count: notificationCount, error: notificationError } = await supabase
-          .from("notifications")
-          .select("*", { count: "exact", head: true })
+        const { count: notificationCount, error: notificationError } =
+          await supabase
+            .from("notifications")
+            .select("*", { count: "exact", head: true });
 
         // Fetch log count
         const { count: logCount, error: logError } = await supabase
           .from("audit_logs")
-          .select("*", { count: "exact", head: true })
+          .select("*", { count: "exact", head: true });
 
         setStats({
           users: userCount || 0,
           cases: caseCount || 0,
           notifications: notificationCount || 0,
           logs: logCount || 0,
-        })
+        });
       } catch (error) {
-        console.error("Error fetching stats:", error)
+        console.error("Error fetching stats:", error);
       } finally {
-        setLoading(false)
+        setLoading(false);
       }
     }
 
-    fetchStats()
-  }, [supabase])
+    fetchStats();
+  }, [supabase]);
 
   return (
     <div className="space-y-6">
@@ -75,7 +76,9 @@ export default function AdminDashboardPage() {
             <Users className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{loading ? "..." : stats.users}</div>
+            <div className="text-2xl font-bold">
+              {loading ? "..." : stats.users}
+            </div>
             <p className="text-xs text-muted-foreground">
               {loading ? "Loading..." : `${stats.users} registered users`}
             </p>
@@ -88,8 +91,12 @@ export default function AdminDashboardPage() {
             <FileText className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{loading ? "..." : stats.cases}</div>
-            <p className="text-xs text-muted-foreground">{loading ? "Loading..." : `${stats.cases} total cases`}</p>
+            <div className="text-2xl font-bold">
+              {loading ? "..." : stats.cases}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {loading ? "Loading..." : `${stats.cases} total cases`}
+            </p>
           </CardContent>
         </Card>
 
@@ -99,9 +106,13 @@ export default function AdminDashboardPage() {
             <Bell className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{loading ? "..." : stats.notifications}</div>
+            <div className="text-2xl font-bold">
+              {loading ? "..." : stats.notifications}
+            </div>
             <p className="text-xs text-muted-foreground">
-              {loading ? "Loading..." : `${stats.notifications} system notifications`}
+              {loading
+                ? "Loading..."
+                : `${stats.notifications} system notifications`}
             </p>
           </CardContent>
         </Card>
@@ -112,7 +123,9 @@ export default function AdminDashboardPage() {
             <Settings className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{loading ? "..." : stats.logs}</div>
+            <div className="text-2xl font-bold">
+              {loading ? "..." : stats.logs}
+            </div>
             <p className="text-xs text-muted-foreground">
               {loading ? "Loading..." : `${stats.logs} system events logged`}
             </p>
@@ -169,5 +182,5 @@ export default function AdminDashboardPage() {
         </Card>
       </div>
     </div>
-  )
+  );
 }

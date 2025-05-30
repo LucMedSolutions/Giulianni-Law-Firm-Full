@@ -1,5 +1,7 @@
-import { createClientComponentClient, createServerComponentClient } from "@supabase/auth-helpers-nextjs"
-import { cookies } from "next/headers"
+import {
+  createClientComponentClient,
+  createServerComponentClient,
+} from "@supabase/auth-helpers-nextjs";
 
 // Define permission types
 export type Permission =
@@ -16,10 +18,15 @@ export type Permission =
   | "delete_document"
   | "manage_users"
   | "view_all_users"
-  | "admin_access"
+  | "admin_access";
 
 // Define staff role types
-export type StaffRole = "senior_attorney" | "attorney" | "secretary" | "paralegal" | "clerk"
+export type StaffRole =
+  | "senior_attorney"
+  | "attorney"
+  | "secretary"
+  | "paralegal"
+  | "clerk";
 
 // Staff role display names
 export const staffRoleNames: Record<StaffRole, string> = {
@@ -28,7 +35,7 @@ export const staffRoleNames: Record<StaffRole, string> = {
   secretary: "Secretary",
   paralegal: "Paralegal",
   clerk: "Clerk",
-}
+};
 
 // Permission display names
 export const permissionNames: Record<Permission, string> = {
@@ -46,7 +53,7 @@ export const permissionNames: Record<Permission, string> = {
   manage_users: "Manage Users",
   view_all_users: "View All Users",
   admin_access: "Full Administrative Access",
-}
+};
 
 // Default permissions for each staff role
 export const defaultRolePermissions: Record<StaffRole, Permission[]> = {
@@ -81,144 +88,158 @@ export const defaultRolePermissions: Record<StaffRole, Permission[]> = {
     "view_assigned_documents",
     "upload_document",
   ],
-  paralegal: ["view_assigned_cases", "view_assigned_documents", "upload_document"],
+  paralegal: [
+    "view_assigned_cases",
+    "view_assigned_documents",
+    "upload_document",
+  ],
   clerk: ["view_assigned_cases", "view_assigned_documents"],
-}
+};
 
 // Client-side permission check
 export async function hasPermission(permission: Permission): Promise<boolean> {
-  const supabase = createClientComponentClient()
+  const supabase = createClientComponentClient();
 
   try {
-    const { data: session } = await supabase.auth.getSession()
+    const { data: session } = await supabase.auth.getSession();
 
     if (!session.session) {
-      return false
+      return false;
     }
 
     const { data, error } = await supabase.rpc("user_has_permission", {
       user_id: session.session.user.id,
       permission_name: permission,
-    })
+    });
 
     if (error) {
-      console.error("Permission check error:", error)
-      return false
+      console.error("Permission check error:", error);
+      return false;
     }
 
-    return data
+    return data;
   } catch (error) {
-    console.error("Permission check error:", error)
-    return false
+    console.error("Permission check error:", error);
+    return false;
   }
 }
 
 // Server-side permission check
-export async function hasPermissionServer(userId: string, permission: Permission): Promise<boolean> {
-  const supabase = createServerComponentClient({ cookies })
+export async function hasPermissionServer(
+  userId: string,
+  permission: Permission
+): Promise<boolean> {
+  const supabase = createServerComponentClient({ cookies });
 
   try {
     const { data, error } = await supabase.rpc("user_has_permission", {
       user_id: userId,
       permission_name: permission,
-    })
+    });
 
     if (error) {
-      console.error("Permission check error:", error)
-      return false
+      console.error("Permission check error:", error);
+      return false;
     }
 
-    return data
+    return data;
   } catch (error) {
-    console.error("Permission check error:", error)
-    return false
+    console.error("Permission check error:", error);
+    return false;
   }
 }
 
 // Get all permissions for a staff role
-export async function getPermissionsForRole(role: StaffRole): Promise<Permission[]> {
-  const supabase = createClientComponentClient()
+export async function getPermissionsForRole(
+  role: StaffRole
+): Promise<Permission[]> {
+  const supabase = createClientComponentClient();
 
   try {
     const { data, error } = await supabase
       .from("role_permissions_view")
       .select("permission_name")
-      .eq("staff_role", role)
+      .eq("staff_role", role);
 
     if (error) {
-      console.error("Get permissions error:", error)
-      return []
+      console.error("Get permissions error:", error);
+      return [];
     }
 
-    return data.map((item) => item.permission_name as Permission)
+    return data.map((item) => item.permission_name as Permission);
   } catch (error) {
-    console.error("Get permissions error:", error)
-    return []
+    console.error("Get permissions error:", error);
+    return [];
   }
 }
 
 // Get user's staff role
 export async function getUserStaffRole(): Promise<StaffRole | null> {
-  const supabase = createClientComponentClient()
+  const supabase = createClientComponentClient();
 
   try {
-    const { data: session } = await supabase.auth.getSession()
+    const { data: session } = await supabase.auth.getSession();
 
     if (!session.session) {
-      return null
+      return null;
     }
 
     const { data, error } = await supabase
       .from("users")
       .select("staff_role")
       .eq("id", session.session.user.id)
-      .maybeSingle()
+      .maybeSingle();
 
     if (error || !data) {
-      console.error("Get staff role error:", error)
-      return null
+      console.error("Get staff role error:", error);
+      return null;
     }
 
-    return data.staff_role
+    return data.staff_role;
   } catch (error) {
-    console.error("Get staff role error:", error)
-    return null
+    console.error("Get staff role error:", error);
+    return null;
   }
 }
 
 // Check if user can delete cases
 export async function canDeleteCase(): Promise<boolean> {
-  const supabase = createClientComponentClient()
+  const supabase = createClientComponentClient();
 
   try {
-    const { data: session } = await supabase.auth.getSession()
+    const { data: session } = await supabase.auth.getSession();
 
     if (!session.session) {
-      return false
+      return false;
     }
 
     const { data: userData, error: userError } = await supabase
       .from("users")
       .select("role, staff_role")
       .eq("id", session.session.user.id)
-      .single()
+      .single();
 
     if (userError || !userData) {
-      console.error("Get user role error:", userError)
-      return false
+      console.error("Get user role error:", userError);
+      return false;
     }
 
     if (userData.role === "admin") {
-      return true
+      return true;
     }
 
-    if (userData.role === "staff" && ["senior_attorney", "attorney", "secretary"].includes(userData.staff_role || "")) {
-      return true
+    if (
+      userData.role === "staff" &&
+      ["senior_attorney", "attorney", "secretary"].includes(
+        userData.staff_role || ""
+      )
+    ) {
+      return true;
     }
 
-    return false
+    return false;
   } catch (error) {
-    console.error("Permission check error:", error)
-    return false
+    console.error("Permission check error:", error);
+    return false;
   }
 }

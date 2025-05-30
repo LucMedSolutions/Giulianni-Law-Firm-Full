@@ -2,7 +2,7 @@
 # This file defines the FastAPI application, its endpoints, and handles incoming HTTP requests.
 # It serves as the main entry point for the backend API.
 
-import os # Added for potential environment variable usage in CORS
+import os # Added for potential environment variable usage in CORS and for path operations
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware # For handling Cross-Origin Resource Sharing
@@ -48,6 +48,21 @@ async def parse_document_endpoint(request: ParseDocumentRequest, background_task
     Currently, the crew run is synchronous but is designed to be made asynchronous.
     """
     print(f"Received /parse-document/ request for file: {request.filename}, URL: {request.file_url}, Query: {request.user_query}")
+
+    # --- Server-Side Filename Validation ---
+    # TODO: This filename extension check is a basic validation.
+    # Robust server-side validation should be enforced by Supabase Storage policies/functions upon upload.
+    ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.png', '.txt', '.csv']
+    try:
+        file_ext = os.path.splitext(request.filename)[1].lower()
+        if not file_ext: # Check if extension could be extracted
+             raise HTTPException(status_code=400, detail=f"Could not determine file extension for filename: {request.filename}. An extension is required.")
+        if file_ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Invalid file type based on filename extension: '{file_ext}'. Allowed extensions: {', '.join(ALLOWED_EXTENSIONS)}")
+    except Exception as e: # Catch any error during filename processing
+        print(f"Error during filename validation for {request.filename}: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid filename or extension: {request.filename}. Error: {str(e)}")
+    # --- End Server-Side Filename Validation ---
     
     # Get an instance of the LawFirmCrewRunner.
     runner = get_crew_runner_instance()

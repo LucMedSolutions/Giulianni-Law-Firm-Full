@@ -33,6 +33,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import DocumentUpload from "@/components/document-upload" // Import the new component
+import { useToast } from "@/components/ui/use-toast" // For success toast
 
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<any[]>([])
@@ -43,15 +45,22 @@ export default function DocumentsPage() {
   const [statusFilter, setStatusFilter] = useState("all")
   const [typeFilter, setTypeFilter] = useState("all")
   const [sortOrder, setSortOrder] = useState("newest")
-  const [selectedDocument, setSelectedDocument] = useState<any>(null)
+  const [selectedDocument, setSelectedDocument] = useState<any | null>(null) // Will store signedPreviewUrl
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false) // State for modal
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [currentUserRole, setCurrentUserRole] = useState<"staff" | "admin" | null>(null)
+  const [loadingSignedUrlFor, setLoadingSignedUrlFor] = useState<string | null>(null) // Track URL loading
 
   const router = useRouter()
   const supabase = createClientComponentClient()
+  const { toast } = useToast()
 
+  // Initial fetch of documents
   useEffect(() => {
     fetchDocuments()
   }, [])
 
+  // Effect for filtering and sorting
   useEffect(() => {
     filterDocuments()
   }, [documents, searchQuery, statusFilter, typeFilter, sortOrder])
@@ -61,39 +70,31 @@ export default function DocumentsPage() {
     setError(null)
 
     try {
-      // Check if user is authenticated
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
-
+      const { data: { session } } = await supabase.auth.getSession()
       if (!session) {
-        router.push("/")
+        router.push("/") // Redirect to login if no session
         return
       }
+      setCurrentUserId(session.user.id)
 
-      // Get user data
       const { data: user, error: userError } = await supabase
         .from("users")
-        .select("role, full_name, staff_role")
+        .select("role") // Only fetch role, other details not needed here for now
         .eq("id", session.user.id)
-        .maybeSingle()
+        .single() // Use single to ensure one user is returned or error
 
-      if (userError) {
-        throw userError
-      }
-
-      if (!user) {
-        throw new Error("User profile not found. Please contact an administrator.")
+      if (userError || !user) {
+        throw new Error(userError?.message || "User profile not found. Please re-login.")
       }
 
       if (user.role !== "staff" && user.role !== "admin") {
-        // Sign out if not authorized
         await supabase.auth.signOut()
-        router.push("/")
+        router.push("/") // Redirect if not staff or admin
+        setError("Access Denied: You do not have permission to view this page.")
         return
       }
+      setCurrentUserRole(user.role as "staff" | "admin")
 
-      // Fetch documents with case information
       const { data, error } = await supabase
         .from("documents")
         .select(`
@@ -199,6 +200,49 @@ export default function DocumentsPage() {
     })
   }
 
+  const getSignedUrlAndAct = async (document: any, action: "view" | "download", isModalTrigger: boolean = false) => {
+    if (!document || !document.id) {
+      toast({ title: "Error", description: "Document information is missing.", variant: "destructive" })
+      return
+    }
+    setLoadingSignedUrlFor(document.id)
+    try {
+      const response = await fetch(`/api/download-document?documentId=${document.id}`)
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || `Failed to get URL (status: ${response.status})`)
+      }
+      const { signedUrl } = await response.json()
+
+      if (!signedUrl) {
+        throw new Error("No signed URL received from server.")
+      }
+
+      if (action === "view") {
+        // If triggered by modal opening, selectedDocument is already set.
+        // Just update it with the signed URL.
+        setSelectedDocument((prevDoc: any) => ({ ...prevDoc, id: document.id, filename: document.filename, file_type: document.file_type, cases: document.cases, notes: document.notes, storage_url: document.storage_url, bucket_name: document.bucket_name, signedPreviewUrl: signedUrl }))
+        // No need to control dialog open state here as it's handled by onOpenChange or already open
+      } else if (action === "download") {
+        window.open(signedUrl, "_blank")
+      }
+    } catch (error: any) {
+      console.error("Error getting signed URL:", error)
+      toast({
+        title: "Error",
+        description: error.message || "Could not retrieve link for the document. Please try again.",
+        variant: "destructive",
+      })
+      if (action === "view" && isModalTrigger) {
+        // If it was the modal trigger that failed, prevent opening or clear selection
+        setSelectedDocument(null)
+      }
+    } finally {
+      setLoadingSignedUrlFor(null)
+    }
+  }
+
+
   if (loading) {
     return (
       <div className="p-6 flex items-center justify-center">
@@ -233,10 +277,37 @@ export default function DocumentsPage() {
           <h1 className="text-2xl font-bold">Documents</h1>
           <p className="text-gray-500">Manage and view all case documents</p>
         </div>
-        <Button onClick={() => router.push("/staff-dashboard/documents/upload")}>
-          <Plus className="h-4 w-4 mr-2" />
-          Upload Document
-        </Button>
+        <Dialog open={isUploadModalOpen} onOpenChange={setIsUploadModalOpen}>
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="h-4 w-4 mr-2" />
+              Upload Document
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Upload New Document</DialogTitle>
+              <DialogDescription>
+                Select a file and choose the case to associate it with. The case list will be based on your role and assignments.
+              </DialogDescription>
+            </DialogHeader>
+            {currentUserId && currentUserRole && (
+              <DocumentUpload
+                userId={currentUserId}
+                userRole={currentUserRole}
+                onUploadComplete={(doc) => {
+                  setIsUploadModalOpen(false)
+                  fetchDocuments() // Refresh document list
+                  toast({
+                    title: "Upload Successful",
+                    description: `${doc.file_name} has been uploaded.`,
+                    variant: "success",
+                  })
+                }}
+              />
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
 
       <Card className="mb-6">
@@ -305,7 +376,8 @@ export default function DocumentsPage() {
                 : "No documents match your current filters."}
             </p>
             {documents.length === 0 ? (
-              <Button onClick={() => router.push("/staff-dashboard/documents/upload")}>
+              // Also change this button to open modal
+              <Button onClick={() => setIsUploadModalOpen(true)}>
                 <Plus className="h-4 w-4 mr-2" />
                 Upload Your First Document
               </Button>
@@ -366,17 +438,23 @@ export default function DocumentsPage() {
                       <div className="flex justify-end gap-2">
                         <Dialog
                           onOpenChange={(open) => {
-                            if (open) setSelectedDocument(doc)
-                            else setSelectedDocument(null)
+                            if (open) {
+                              // Set basic info first for quicker modal header population
+                              setSelectedDocument(doc);
+                              // Then fetch signed URL for content
+                              getSignedUrlAndAct(doc, 'view', true);
+                            } else {
+                              setSelectedDocument(null);
+                            }
                           }}
                         >
                           <DialogTrigger asChild>
-                            <Button variant="outline" size="sm">
-                              <Eye className="h-4 w-4 mr-1" />
-                              View
+                            <Button variant="outline" size="sm" disabled={loadingSignedUrlFor === doc.id}>
+                              {loadingSignedUrlFor === doc.id ? <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <Eye className="h-4 w-4 mr-1" />}
+                              {loadingSignedUrlFor !== doc.id && "View"}
                             </Button>
                           </DialogTrigger>
-                          <DialogContent className="max-w-4xl h-[80vh]">
+                          <DialogContent className="max-w-4xl h-[80vh] flex flex-col"> {/* Added flex flex-col */}
                             <DialogHeader>
                               <DialogTitle className="flex items-center">
                                 {selectedDocument && getFileIcon(selectedDocument.file_type)}
@@ -386,50 +464,71 @@ export default function DocumentsPage() {
                                 {selectedDocument?.cases?.case_number} - {selectedDocument?.cases?.client_name}
                               </DialogDescription>
                             </DialogHeader>
-                            <Tabs defaultValue="document" className="h-full flex flex-col">
+                            <Tabs defaultValue="document" className="flex-1 flex flex-col overflow-hidden"> {/* Added flex-1 flex flex-col overflow-hidden */}
                               <TabsList>
                                 <TabsTrigger value="document">Document</TabsTrigger>
                                 <TabsTrigger value="summary">Summary</TabsTrigger>
                               </TabsList>
                               <TabsContent value="document" className="flex-1 overflow-auto">
-                                {selectedDocument?.file_type.includes("pdf") ? (
+                                {!selectedDocument?.signedPreviewUrl && loadingSignedUrlFor === selectedDocument?.id && (
+                                  <div className="flex items-center justify-center h-full">
+                                    <div className="w-8 h-8 border-4 border-t-blue-500 border-blue-200 rounded-full animate-spin"></div>
+                                    <span className="ml-2">Loading secure preview...</span>
+                                  </div>
+                                )}
+                                {selectedDocument?.signedPreviewUrl && selectedDocument?.file_type.includes("pdf") && (
                                   <iframe
-                                    src={`${selectedDocument?.storage_url}#toolbar=0`}
+                                    src={`${selectedDocument.signedPreviewUrl}#toolbar=0`}
                                     className="w-full h-full border-0"
                                   />
-                                ) : selectedDocument?.file_type.includes("image") ? (
-                                  <div className="flex items-center justify-center h-full">
+                                )}
+                                {selectedDocument?.signedPreviewUrl && selectedDocument?.file_type.includes("image") && (
+                                  <div className="flex items-center justify-center h-full p-4">
                                     <img
-                                      src={selectedDocument?.storage_url || "/placeholder.svg"}
-                                      alt={selectedDocument?.filename}
+                                      src={selectedDocument.signedPreviewUrl}
+                                      alt={selectedDocument.filename}
                                       className="max-w-full max-h-full object-contain"
                                     />
                                   </div>
-                                ) : (
-                                  <div className="flex flex-col items-center justify-center h-full">
+                                )}
+                                {selectedDocument?.signedPreviewUrl && !selectedDocument?.file_type.includes("pdf") && !selectedDocument?.file_type.includes("image") && (
+                                  <div className="flex flex-col items-center justify-center h-full p-4">
                                     <FileText className="h-16 w-16 text-gray-300 mb-4" />
                                     <p className="text-center">
-                                      This file type cannot be previewed directly.
+                                      Direct preview is not available for this file type.
                                       <br />
                                       Please download the file to view it.
                                     </p>
-                                    <Button className="mt-4" asChild>
-                                      <a
-                                        href={selectedDocument?.storage_url}
-                                        download
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                      >
-                                        <Download className="h-4 w-4 mr-2" />
-                                        Download File
-                                      </a>
+                                    <Button
+                                      className="mt-4"
+                                      onClick={() => getSignedUrlAndAct(selectedDocument, "download")}
+                                      disabled={loadingSignedUrlFor === selectedDocument?.id}
+                                    >
+                                      {loadingSignedUrlFor === selectedDocument?.id ? <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <Download className="h-4 w-4 mr-2" />}
+                                      Download File
                                     </Button>
                                   </div>
                                 )}
+                                {/* Fallback if signedPreviewUrl is not available for some reason after loading attempt */}
+                                {!selectedDocument?.signedPreviewUrl && loadingSignedUrlFor !== selectedDocument?.id && selectedDocument && (
+                                   <div className="flex flex-col items-center justify-center h-full p-4">
+                                     <AlertCircle className="h-16 w-16 text-red-400 mb-4" />
+                                     <p className="text-center text-red-600">Could not load document preview.</p>
+                                     <Button
+                                      className="mt-4"
+                                      onClick={() => getSignedUrlAndAct(selectedDocument, "download")}
+                                      disabled={loadingSignedUrlFor === selectedDocument?.id}
+                                    >
+                                      {loadingSignedUrlFor === selectedDocument?.id ? <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <Download className="h-4 w-4 mr-2" />}
+                                      Download File
+                                    </Button>
+                                   </div>
+                                )}
                               </TabsContent>
-                              <TabsContent value="summary" className="flex-1 overflow-auto">
+                              <TabsContent value="summary" className="flex-1 overflow-auto"> {/* Ensure summary tab is also scrollable */}
                                 <div className="p-4 space-y-6">
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                  {/* ... (rest of summary content remains the same) ... */}
+                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <Card>
                                       <CardHeader>
                                         <CardTitle className="text-base">Document Information</CardTitle>
@@ -509,11 +608,9 @@ export default function DocumentsPage() {
                             </Tabs>
                           </DialogContent>
                         </Dialog>
-                        <Button variant="outline" size="sm" asChild>
-                          <a href={doc.storage_url} download target="_blank" rel="noopener noreferrer">
-                            <Download className="h-4 w-4" />
-                            <span className="sr-only">Download</span>
-                          </a>
+                        <Button variant="outline" size="sm" onClick={() => getSignedUrlAndAct(doc, "download")} disabled={loadingSignedUrlFor === doc.id}>
+                           {loadingSignedUrlFor === doc.id ? <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <Download className="h-4 w-4" />}
+                           <span className="sr-only">Download</span>
                         </Button>
                       </div>
                     </TableCell>

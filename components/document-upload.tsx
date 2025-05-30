@@ -15,16 +15,24 @@ import { Upload, FileText, AlertCircle, CheckCircle, Database, ExternalLink } fr
 interface Case {
   id: string
   case_number: string
-  client_name: string | null
+  client_name: string | null // Ensure this is fetched for staff/admin if needed for display
   case_type: string
+  // Potentially other fields depending on what's needed for display or logic
 }
 
 interface DocumentUploadProps {
-  caseId?: string
-  onUploadComplete?: (document: any) => void
+  userId: string // Required: ID of the user performing the upload
+  userRole: "client" | "staff" | "admin" // Required: Role of the user
+  caseId?: string // Optional: Pre-select case or hide selector
+  onUploadComplete?: (document: any) => void // Optional: Callback after successful upload
 }
 
-export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUploadProps) {
+export default function DocumentUpload({
+  userId,
+  userRole,
+  caseId,
+  onUploadComplete,
+}: DocumentUploadProps) {
   const [file, setFile] = useState<File | null>(null)
   const [selectedCaseId, setSelectedCaseId] = useState<string>(caseId || "")
   const [cases, setCases] = useState<Case[]>([])
@@ -36,30 +44,133 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
 
   const supabase = createClient()
 
+  // IMPORTANT: For signed URLs to work correctly and securely,
+  // the Supabase storage bucket (e.g., "documents") MUST be set to PRIVATE.
+  // Public buckets will not use or respect signed URL expiration times.
+  // Ensure RLS policies are in place to control access via Supabase SDK if direct SDK access is also used.
+
+  // --- Validation Constants ---
+  const ALLOWED_MIME_TYPES = [
+    'application/pdf',
+    'application/msword', // .doc
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+    'image/jpeg', // .jpeg, .jpg
+    'image/png', // .png
+    'application/vnd.ms-excel', // .xls
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+    // Add other relevant types like .txt, .csv if needed, ensure they match 'accept' prop and backend
+    'text/plain', // .txt
+    'text/csv', // .csv
+  ]
+  const MAX_FILE_SIZE_MB = 10
+  const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+  // --- End Validation Constants ---
+
   useEffect(() => {
+    // Initialize selectedCaseId if caseId prop is provided
+    if (caseId) {
+      setSelectedCaseId(caseId)
+    }
     fetchCases()
     checkStorageBuckets()
-  }, [])
+  }, [userId, userRole, caseId]) // Added userId, userRole, caseId as dependencies
 
   const fetchCases = async () => {
-    try {
-      setLoadingCases(true)
-      const { data: casesData, error } = await supabase
-        .from("cases")
-        .select("id, case_number, client_name, case_type")
-        .order("created_at", { ascending: false })
+    // If caseId is provided, we might not need to fetch all cases,
+    // or we can use it to pre-select the case from the fetched list.
+    // For now, if caseId is provided and valid, we could potentially skip fetching.
+    // However, the dropdown still needs to be populated if it's visible.
+    // If caseId is provided, the dropdown could be hidden or pre-filled.
 
-      if (error) {
-        console.error("Error fetching cases:", error)
-        setMessage({ type: "error", text: "Failed to load cases" })
+    // For now, we will always fetch cases, and if caseId is provided,
+    // it will be used for initial selection by `selectedCaseId` state.
+    // The component can be enhanced later to hide the dropdown if caseId is fixed.
+
+    setLoadingCases(true)
+    setMessage(null)
+    setCases([]) // Clear previous cases
+
+    try {
+      let fetchedCasesData: Case[] | null = null
+      let fetchError: any = null
+
+      const baseQuery = "id, case_number, client_name, case_type" // Ensure client_name is fetched
+
+      if (userRole === "client") {
+        // Assumes cases table has a 'client_id' column linked to the users.id of the client.
+        // This is a common convention. If schema is different, this needs adjustment.
+        const { data, error } = await supabase
+          .from("cases")
+          .select(baseQuery)
+          .eq("client_id", userId) // Filter by client_id
+          .order("created_at", { ascending: false })
+        fetchedCasesData = data
+        fetchError = error
+      } else if (userRole === "staff") {
+        // Fetch case_ids staff is assigned to, then fetch those cases.
+        const { data: assignments, error: assignmentsError } = await supabase
+          .from("case_assignments")
+          .select("case_id")
+          .eq("user_id", userId) // Filter by staff user's ID
+
+        if (assignmentsError) {
+          throw assignmentsError
+        }
+
+        if (assignments && assignments.length > 0) {
+          const caseIds = assignments.map((a) => a.case_id)
+          const { data, error } = await supabase
+            .from("cases")
+            .select(baseQuery)
+            .in("id", caseIds) // Filter by the fetched case_ids
+            .order("created_at", { ascending: false })
+          fetchedCasesData = data
+          fetchError = error
+        } else {
+          // Staff is not assigned to any cases
+          fetchedCasesData = []
+        }
+      } else if (userRole === "admin") {
+        // Admin fetches all cases
+        const { data, error } = await supabase
+          .from("cases")
+          .select(baseQuery)
+          .order("created_at", { ascending: false })
+        fetchedCasesData = data
+        fetchError = error
+      }
+
+      if (fetchError) {
+        console.error(`Error fetching cases for ${userRole} (${userId}):`, fetchError)
+        setMessage({ type: "error", text: `Failed to load cases: ${fetchError.message}` })
         return
       }
 
-      console.log("Fetched cases:", casesData?.length || 0)
-      setCases(casesData || [])
-    } catch (error) {
+      console.log(`Fetched ${fetchedCasesData?.length || 0} cases for ${userRole} (${userId})`)
+      setCases(fetchedCasesData || [])
+
+      // Handle pre-selection or warning if caseId prop is provided
+      if (caseId) {
+        if (fetchedCasesData?.some(c => c.id === caseId)) {
+          setSelectedCaseId(caseId)
+        } else {
+          // caseId was provided but not found in the fetched list for this user/role
+          setMessage({
+            type: "warning",
+            text: `The pre-selected case (ID: ${caseId}) is not accessible or valid for your user role. Please select another case.`,
+          })
+          setSelectedCaseId("") // Clear invalid pre-selection
+          // If caseId was mandatory (dropdown hidden), this might be an error state.
+          // For now, selector remains visible.
+        }
+      } else {
+         // If no caseId prop, and no specific case was pre-selected, clear selection
+        setSelectedCaseId("")
+      }
+
+    } catch (error: any) {
       console.error("Error in fetchCases:", error)
-      setMessage({ type: "error", text: "Failed to load cases" })
+      setMessage({ type: "error", text: `Failed to load cases: ${error.message}` })
     } finally {
       setLoadingCases(false)
     }
@@ -194,12 +305,16 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
         .insert({
           case_id: selectedCaseId,
           file_name: file.name,
-          file_path: uploadData.path,
+          // Store the file path from Supabase Storage, not a public URL.
+          // Assuming 'storage_url' column will now store this path.
+          // If the column name is e.g. 'file_path', this should be: file_path: uploadData.path
+          storage_url: uploadData.path,
           file_size: file.size,
           file_type: file.type,
-          bucket_name: usedBucket,
-          status: "pending",
+          bucket_name: usedBucket, // Store the bucket name for reconstructing paths or direct access if needed
+          status: "pending", // Default status
           upload_time: new Date().toISOString(),
+          uploaded_by: userId, // Associate upload with the user
         })
         .select()
         .single()
@@ -240,14 +355,41 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0]
+    const fileInput = e.target // Keep a reference to the input for clearing
+
     if (selectedFile) {
-      // Check file size (50MB limit)
-      if (selectedFile.size > 50 * 1024 * 1024) {
-        setMessage({ type: "error", text: "File size must be less than 50MB" })
+      // TODO: For enhanced security, implement server-side validation using Supabase Storage policies
+      // or Edge Functions to restrict file types and sizes directly at the storage layer.
+
+      // Type Check
+      if (!ALLOWED_MIME_TYPES.includes(selectedFile.type)) {
+        setMessage({
+          type: "error",
+          text: `Invalid file type: ${selectedFile.type}. Allowed types: PDF, Word, Excel, JPG, PNG, TXT, CSV.`,
+        })
+        setFile(null) // Clear any previously selected valid file
+        if (fileInput) fileInput.value = "" // Clear the file input
         return
       }
+
+      // Size Check
+      if (selectedFile.size > MAX_FILE_SIZE_BYTES) {
+        setMessage({
+          type: "error",
+          text: `File is too large (${(selectedFile.size / 1024 / 1024).toFixed(2)}MB). Maximum size: ${MAX_FILE_SIZE_MB}MB.`,
+        })
+        setFile(null) // Clear any previously selected valid file
+        if (fileInput) fileInput.value = "" // Clear the file input
+        return
+      }
+
+      // If all checks pass
       setFile(selectedFile)
-      setMessage(null)
+      setMessage({ type: "success", text: `File "${selectedFile.name}" selected and valid.` }) // Or setMessage(null)
+    } else {
+      // No file selected, or selection was cancelled
+      setFile(null)
+      setMessage(null) // Clear any previous messages
     }
   }
 
@@ -312,25 +454,30 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
           {loadingCases ? (
             <div className="text-sm text-muted-foreground">Loading cases...</div>
           ) : (
-            <Select value={selectedCaseId} onValueChange={setSelectedCaseId}>
+            <Select
+              value={selectedCaseId}
+              onValueChange={setSelectedCaseId}
+              disabled={!!caseId} // Disable selector if caseId is provided via props
+            >
               <SelectTrigger>
                 <SelectValue placeholder="Choose a case" />
               </SelectTrigger>
               <SelectContent>
-                {cases.length === 0 ? (
+                {cases.length === 0 && !loadingCases ? (
                   <SelectItem value="no-cases" disabled>
-                    No cases found
+                    No cases available for your role or no cases exist.
                   </SelectItem>
                 ) : (
                   cases.map((case_) => (
                     <SelectItem key={case_.id} value={case_.id}>
-                      Case #{case_.case_number} - {case_.client_name || "No client name"}
+                      Case #{case_.case_number} - {case_.client_name || case_.case_type || "N/A"}
                     </SelectItem>
                   ))
                 )}
               </SelectContent>
             </Select>
           )}
+          {caseId && <p className="text-sm text-muted-foreground mt-1">This document will be uploaded to the pre-selected case.</p>}
         </div>
 
         {/* File Selection */}
@@ -340,10 +487,13 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
             id="file-upload"
             type="file"
             onChange={handleFileChange}
-            accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif"
+            // Consolidated accept string based on defined MIME types (approximated)
+            accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.xls,.xlsx,.txt,.csv"
             className="cursor-pointer"
-            disabled={availableBuckets.length === 0}
+            disabled={availableBuckets.length === 0 || uploading}
           />
+          {/* Validation messages are handled by the main message state.
+              This area remains for displaying selected file info. */}
           {file && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <FileText className="h-4 w-4" />
@@ -379,7 +529,14 @@ export default function DocumentUpload({ caseId, onUploadComplete }: DocumentUpl
         {/* Upload Button */}
         <Button
           onClick={handleUpload}
-          disabled={!file || !selectedCaseId || uploading || loadingCases || availableBuckets.length === 0}
+          disabled={
+            !file ||
+            !selectedCaseId ||
+            uploading ||
+            loadingCases ||
+            loadingStorage ||
+            availableBuckets.length === 0
+          }
           className="w-full"
         >
           {uploading ? "Uploading..." : "Upload Document"}

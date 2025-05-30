@@ -46,7 +46,8 @@ def test_parse_document_success(mock_get_runner):
     }
 
     payload = {
-        "file_url": "http://example.com/test.pdf",
+        "file_path": "user/uploads/test.pdf",
+        "bucket_name": "documents",
         "filename": "test.pdf",
         "user_query": "Summarize this document."
     }
@@ -59,14 +60,19 @@ def test_parse_document_success(mock_get_runner):
     assert "Crew run initiated successfully" in json_response["message"]
     mock_get_runner.assert_called_once()
     mock_run_crew_method.assert_called_once_with(
-        document_info={"file_url": payload["file_url"], "filename": payload["filename"]},
+        document_info={
+            "file_path": payload["file_path"],
+            "bucket_name": payload["bucket_name"],
+            "filename": payload["filename"]
+        },
         user_query=payload["user_query"]
     )
 
 def test_parse_document_invalid_extension():
     payload = {
-        "file_url": "http://example.com/test.zip", # Invalid extension
-        "filename": "test.zip",
+        "file_path": "user/uploads/test.zip",
+        "bucket_name": "documents",
+        "filename": "test.zip", # Invalid extension
         "user_query": "Summarize this document."
     }
     response = client.post("/parse-document/", json=payload)
@@ -85,7 +91,8 @@ def test_parse_document_crew_runner_exception(mock_get_runner):
     # We also need to mock update_task_status for the error handling path in main.py
     with patch('backend.main.update_task_status', return_value="error-task-id") as mock_update_status:
         payload = {
-            "file_url": "http://example.com/test.docx",
+            "file_path": "user/uploads/test.docx",
+            "bucket_name": "documents",
             "filename": "test.docx",
             "user_query": "Summarize."
         }

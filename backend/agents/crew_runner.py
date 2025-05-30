@@ -18,21 +18,45 @@ from langchain.tools import tool # For creating tools from functions
 
 # Local imports for status tracking
 from backend.agents.status import update_task_status, get_agent_status
+from supabase import create_client as create_supabase_client, Client as SupabaseClient
+
 # Note: generate_legal_tasks from task_generator.py is no longer directly used here.
 
 # --- File Processing Tool Definition ---
 @tool("document_content_fetcher_tool")
-def fetch_and_extract_text_from_url(file_url: str, filename: str) -> str:
+def fetch_and_extract_text_from_url(file_path: str, bucket_name: str, filename: str) -> str:
     """
-    Fetches a document from a given URL and extracts its text content.
+    Generates a signed URL for a document in Supabase Storage, fetches it, and extracts its text content.
     Supports PDF (.pdf), Word (.docx), and plain text (.txt) files.
-    The 'filename' argument is used to determine the file type from its extension.
+    'file_path', 'bucket_name', and 'filename' are used to locate and process the file.
     Returns the extracted text or an error message if extraction fails or the type is unsupported.
+    Requires SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables for admin client.
     """
-    print(f"Tool: Attempting to fetch and extract text from URL: {file_url}, Filename: {filename}")
+    print(f"Tool: Attempting to process file: {filename}, Path: {file_path}, Bucket: {bucket_name}")
+
+    signed_file_url = ""
     try:
-        response = requests.get(file_url, stream=True, timeout=30) # Added timeout
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4XX or 5XX)
+        # Initialize Supabase admin client to generate signed URL
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY")
+
+        if not supabase_url or not supabase_service_key:
+            return "Error: SUPABASE_URL or SUPABASE_SERVICE_KEY not configured for the tool."
+
+        supabase_admin: SupabaseClient = create_supabase_client(supabase_url, supabase_service_key)
+
+        signed_url_response = supabase_admin.storage.from_(bucket_name).create_signed_url(file_path, 60) # 60 seconds expiry
+        signed_file_url = signed_url_response.get('signedURL') # Corrected key access
+        if not signed_file_url:
+             # Check if there's an error in the response if signedURL is not found
+            error_detail = signed_url_response.get('error', 'Unknown error generating signed URL')
+            return f"Error generating signed URL: {error_detail}. Path: {file_path}, Bucket: {bucket_name}"
+
+
+        print(f"Tool: Generated signed URL: {signed_file_url} for file: {filename}")
+
+        response = requests.get(signed_file_url, stream=True, timeout=30)
+        response.raise_for_status()
 
         extension = os.path.splitext(filename)[1].lower()
         extracted_text = ""
@@ -69,16 +93,16 @@ def fetch_and_extract_text_from_url(file_url: str, filename: str) -> str:
             return extracted_text
 
         else:
-            unsupported_msg = f"Text extraction not supported for this file type: '{extension}' (Filename: {filename})."
+            unsupported_msg = f"Text extraction not supported for this file type: '{extension}' (Filename: {filename}). Signed URL was: {signed_file_url}"
             print(f"Tool: {unsupported_msg}")
             return unsupported_msg
 
     except requests.exceptions.RequestException as e:
-        error_msg = f"Error fetching file from URL '{file_url}': {str(e)}"
+        error_msg = f"Error fetching file from generated signed URL '{signed_file_url}': {str(e)}"
         print(f"Tool: {error_msg}")
         return error_msg
-    except pypdf.errors.PdfReadError as e: # More specific pypdf error
-        error_msg = f"Error parsing PDF '{filename}': {str(e)}. The file might be corrupted or password-protected."
+    except pypdf.errors.PdfReadError as e:
+        error_msg = f"Error parsing PDF '{filename}' (from signed URL '{signed_file_url}'): {str(e)}. The file might be corrupted or password-protected."
         print(f"Tool: {error_msg}")
         return error_msg
     except Exception as e: # Catch other potential errors during parsing (e.g., from python-docx)
@@ -142,9 +166,9 @@ class LawFirmCrewRunner:
             goal=dedent("""\
                 Parse and extract key information and a summary from documents.
                 If 'document_text_content' is directly provided in your input, use that as the document's text.
-                Otherwise, you MUST use the 'document_content_fetcher_tool' with the 'file_url' and 'filename'
-                (also from your input) to fetch and extract the document's text content.
-                If the tool returns an error message (e.g., unsupported file type, fetch error, parsing error),
+                Otherwise, you MUST use the 'document_content_fetcher_tool' with the 'file_path', 'bucket_name', and 'filename'
+                (from your input) to fetch and extract the document's text content.
+                If the tool returns an error message (e.g., config error, signed URL error, unsupported file type, fetch error, parsing error),
                 that error message should be used as the 'extracted_text' in your output.
                 Finally, provide a concise summary of the (potentially error) 'extracted_text' (approx. 150-200 words).
                 If summarizing an error message, the summary should state that the document could not be processed and why."""),
@@ -192,14 +216,17 @@ class LawFirmCrewRunner:
         print(f"CrewRunner: Main Task ID for this run: {self.main_task_id}")
         
         filename = document_info.get("filename", "N/A")
-        file_url = document_info.get("file_url", "N/A")
-        # Prioritize pre-extracted text if available, as it avoids needing a web scraping tool.
-        doc_text_content = document_info.get("extracted_text") 
+        # file_url is no longer passed directly from main.py, tool will generate it from file_path and bucket_name
+        file_path = document_info.get("file_path", "N/A")
+        bucket_name = document_info.get("bucket_name", "N/A")
+        doc_text_content = document_info.get("extracted_text") # For potentially pre-extracted text
+
+        print(f"CrewRunner: Processing document '{filename}' from path '{file_path}' in bucket '{bucket_name}'.")
         
-        # Log if pre-extracted text is missing, as it affects the DocumentParserAgent's behavior.
-        if not doc_text_content and self.llm: 
-             print(f"CrewRunner: No pre-extracted text for {filename}. DocumentParserAgent will use mock text for summarization if URL processing isn't available (as no web tool is integrated yet).")
-        
+        # Log if pre-extracted text is missing, agent will use the tool.
+        if not doc_text_content and self.llm:
+            print(f"CrewRunner: No pre-extracted text for {filename}. DocumentParserAgent will use the tool.")
+
         actual_crew_result = None # To store the final output from the crew.
 
         try:
@@ -211,13 +238,13 @@ class LawFirmCrewRunner:
             # Its goal is to extract text (if not provided) and summarize it.
             parsing_task_desc = dedent(f"""\
                 Analyze the document named '{filename}'.
-                The document can be accessed via the URL: {file_url}.
+                You are given its 'file_path': '{file_path}' and 'bucket_name': '{bucket_name}'.
                 Your primary goal is to obtain the text content of this document.
 
                 Instructions:
                 1. Check if 'document_text_content' is already provided in your input.
                    - If YES: Use this text directly for the next step.
-                   - If NO: You MUST use the 'document_content_fetcher_tool'. Provide it with the 'file_url' ('{file_url}') and 'filename' ('{filename}') from your input to get the text.
+                   - If NO: You MUST use the 'document_content_fetcher_tool'. Provide it with the 'file_path' ('{file_path}'), 'bucket_name' ('{bucket_name}'), and 'filename' ('{filename}') from your input to get the text.
 
                 2. Once you have the text (either provided directly or fetched by the tool):
                    - This text (or any error message from the tool if fetching failed) will be the 'extracted_text'.
@@ -280,10 +307,11 @@ class LawFirmCrewRunner:
                 # Inputs for the kickoff are available to all tasks in the crew.
                 # 'document_text_content' allows passing pre-extracted text directly.
                 kickoff_inputs = {
-                    'file_url': file_url, # Ensure 'file_url' is used consistently with tool input
-                    'filename': filename, # Ensure 'filename' is passed for the tool
+                    'file_path': file_path,
+                    'bucket_name': bucket_name,
+                    'filename': filename,
                     'user_query': user_query or "", 
-                    'document_text_content': doc_text_content or "" # This allows bypassing the tool if text is already available
+                    'document_text_content': doc_text_content or ""
                 }
                 actual_crew_result = crew.kickoff(inputs=kickoff_inputs)
                 
@@ -297,9 +325,9 @@ class LawFirmCrewRunner:
                 print(f"CrewRunner: LLM not available. Running mock crew for Task ID: {self.main_task_id}")
                 
                 # Simulate output for parsing_task.
-                mock_extracted_text = f"This is MOCK extracted text from '{filename}'. Actual text extraction from URL ({file_url}) is not implemented without tools/LLM." if not doc_text_content else doc_text_content
+                # Note: In the mock path, the tool is not actually called, so we simulate based on whether doc_text_content was provided.
+                mock_extracted_text = doc_text_content if doc_text_content else f"This is MOCK extracted text for '{filename}'. (File path: {file_path}, Bucket: {bucket_name}). Tool not used in mock LLM-disabled mode."
                 mock_summary = f"This is a MOCK summary for '{filename}'. It highlights key MOCK points of the document."
-                # Agents are expected to return strings, so mock outputs are JSON strings.
                 mock_parsing_output_str = json.dumps({ 
                     "extracted_text": mock_extracted_text,
                     "summary": mock_summary

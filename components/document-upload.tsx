@@ -24,7 +24,8 @@ interface DocumentUploadProps {
   userId: string // Required: ID of the user performing the upload
   userRole: "client" | "staff" | "admin" // Required: Role of the user
   caseId?: string // Optional: Pre-select case or hide selector
-  onUploadComplete?: (document: any) => void // Optional: Callback after successful upload
+  // Updated onUploadComplete to pass an object that can include AI processing results
+  onUploadComplete?: (uploadResult: { dbDocument: any; aiTaskId?: string; aiError?: string }) => void
 }
 
 export default function DocumentUpload({
@@ -36,11 +37,25 @@ export default function DocumentUpload({
   const [file, setFile] = useState<File | null>(null)
   const [selectedCaseId, setSelectedCaseId] = useState<string>(caseId || "")
   const [cases, setCases] = useState<Case[]>([])
-  const [uploading, setUploading] = useState(false)
+  const [uploading, setUploading] = useState(false) // Covers file upload to Supabase Storage & DB insert
+  const [processingAICall, setProcessingAICall] = useState(false) // For the backend /parse-document/ call
   const [message, setMessage] = useState<{ type: "success" | "error" | "warning"; text: string } | null>(null)
   const [availableBuckets, setAvailableBuckets] = useState<string[]>([])
   const [loadingCases, setLoadingCases] = useState(true)
   const [loadingStorage, setLoadingStorage] = useState(true)
+
+  // State for AI processing retry
+  const [aiProcessingError, setAiProcessingError] = useState<string | null>(null)
+  const [showAiRetryButton, setShowAiRetryButton] = useState(false)
+    filePath: string
+    bucketName: string
+    fileName: string // Original filename from client side
+    dbDocumentId: string // ID of the record in 'documents' table
+  } | null>(null)
+
+  // Ref for session status and AbortController
+  const sessionLostDuringOperationRef = React.useRef(false)
+  const aiCallAbortControllerRef = React.useRef<AbortController | null>(null)
 
   const supabase = createClient()
 
@@ -73,9 +88,55 @@ export default function DocumentUpload({
     }
     fetchCases()
     checkStorageBuckets()
-  }, [userId, userRole, caseId]) // Added userId, userRole, caseId as dependencies
+
+    // Setup onAuthStateChange listener
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === "SIGNED_OUT" || !session) {
+        sessionLostDuringOperationRef.current = true
+        setMessage({
+          type: "error",
+          text: "Your session has expired. The current operation may fail or has been cancelled. Please log in again.",
+        })
+        setUploading(false)
+        setProcessingAICall(false)
+        setShowAiRetryButton(false) // Hide retry if session is lost
+
+        // Attempt to abort in-flight AI processing call
+        if (aiCallAbortControllerRef.current) {
+          aiCallAbortControllerRef.current.abort()
+          console.log("AI processing call aborted due to session expiry.")
+        }
+      } else if (event === "SIGNED_IN") {
+        // If user signs back in (e.g. in another tab), reset the ref.
+        // New operations should re-check session anyway.
+        sessionLostDuringOperationRef.current = false
+      }
+    })
+
+    return () => {
+      authListener?.unsubscribe()
+    }
+  }, [userId, userRole, caseId, supabase]) // Added supabase to dependencies
+
+  const checkSessionAndProceed = async (): Promise<boolean> => {
+    if (sessionLostDuringOperationRef.current) {
+       setMessage({ type: 'error', text: 'Session lost. Please log in again and retry.' });
+       return false;
+    }
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      sessionLostDuringOperationRef.current = true;
+      setMessage({ type: 'error', text: 'Your session has expired. Please log in and try again.' });
+      setUploading(false);
+      setProcessingAICall(false);
+      setShowAiRetryButton(false);
+      return false;
+    }
+    return true;
+  };
 
   const fetchCases = async () => {
+    if (!await checkSessionAndProceed()) return;
     // If caseId is provided, we might not need to fetch all cases,
     // or we can use it to pre-select the case from the fetched list.
     // For now, if caseId is provided and valid, we could potentially skip fetching.
@@ -218,6 +279,8 @@ export default function DocumentUpload({
   }
 
   const handleUpload = async () => {
+    if (!await checkSessionAndProceed()) return;
+
     if (!file) {
       setMessage({ type: "error", text: "Please select a file" })
       return
@@ -243,7 +306,9 @@ export default function DocumentUpload({
       // Get the selected case data
       const selectedCase = cases.find((c) => c.id === selectedCaseId)
       if (!selectedCase) {
-        throw new Error("Selected case not found")
+        // This error is less likely if cases are loaded correctly and UI prevents empty selection
+        setMessage({ type: "error", text: "Selected case information is missing. Please refresh and try again." })
+        throw new Error("Selected case not found internally")
       }
 
       // Generate filename with case number
@@ -262,17 +327,28 @@ export default function DocumentUpload({
 
       // Try to upload to each available bucket
       for (const bucketName of availableBuckets) {
+        if (!await checkSessionAndProceed()) { // Check session before each attempt if it's a loop that could span time
+            setUploading(false); // Abort further upload attempts
+            return;
+        }
         try {
           console.log(`Trying to upload to bucket: ${bucketName}`)
 
-          const { data, error } = await supabase.storage.from(bucketName).upload(fileName, file, {
+          const { data, error: uploadError } = await supabase.storage.from(bucketName).upload(fileName, file, {
             cacheControl: "3600",
             upsert: false,
           })
 
-          if (error) {
-            console.error(`Upload to ${bucketName} failed:`, error)
-            lastError = error
+          if (uploadError) {
+            console.error(`Upload to ${bucketName} failed:`, uploadError)
+             // Check for auth error specifically
+            if (uploadError.message.includes("JWT") || uploadError.message.includes("Unauthorized") || uploadError.message.includes("token")) {
+              sessionLostDuringOperationRef.current = true; // Mark session as lost
+              setMessage({ type: 'error', text: 'Upload failed: Your session may have expired. Please log in and try again.' });
+              setUploading(false);
+              return; // Stop further processing
+            }
+            lastError = uploadError
             continue
           }
 
@@ -283,22 +359,28 @@ export default function DocumentUpload({
             uploadSuccess = true
             break
           }
-        } catch (error) {
+        } catch (error) { // Catch network or other errors during this specific attempt
           console.error(`Error uploading to ${bucketName}:`, error)
-          lastError = error
+          lastError = error // Keep track of the last error
           continue
         }
       }
 
       if (!uploadSuccess) {
-        const errorMessage = lastError?.message || "Unknown error"
-        throw new Error(`Failed to upload to any available bucket. Last error: ${errorMessage}`)
+        const userFriendlyMessage = "File upload failed. Please ensure you have a stable connection and try again."
+        const technicalError = lastError?.message || "Unknown storage upload error."
+        console.error("Upload to Supabase storage error:", technicalError)
+        // If lastError specifically indicated an auth issue, that would have been caught above.
+        // So this is likely a network or bucket policy issue if not auth.
+        throw new Error(`${userFriendlyMessage} (Details: ${technicalError})`)
       }
 
       if (!uploadData || !usedBucket) {
-        throw new Error("Upload completed but no data returned")
+        // This case should ideally not be reached if uploadSuccess is true.
+        throw new Error("Upload completed but no data returned from storage.")
       }
 
+      if (!await checkSessionAndProceed()) { setUploading(false); return; }
       // Save document metadata to database
       const { data: documentData, error: dbError } = await supabase
         .from("documents")
@@ -328,30 +410,143 @@ export default function DocumentUpload({
         } catch (cleanupError) {
           console.error("Failed to cleanup uploaded file:", cleanupError)
         }
-        throw new Error(`Failed to save document metadata: ${dbError.message}`)
+        // Check for auth error specifically from DB insert
+        if (dbError.message.includes("JWT") || dbError.message.includes("Unauthorized") || dbError.message.includes("token")) {
+            sessionLostDuringOperationRef.current = true;
+            setMessage({ type: 'error', text: 'Saving document details failed: Your session may have expired. Please log in and try again.' });
+            setUploading(false); // Ensure uploading stops
+            return;
+        }
+        throw new Error(`Failed to save document details after upload. Error: ${dbError.message}`);
       }
 
-      setMessage({ type: "success", text: "Document uploaded successfully!" })
-      setFile(null)
+      // --- AI Processing Call ---
+      // Store info needed for potential retry BEFORE clearing file state
+      setLastUploadedDocumentInfo({
+        filePath: documentData.storage_url, // This is the file_path
+        bucketName: documentData.bucket_name,
+        fileName: documentData.file_name, // Use filename from DB record
+        dbDocumentId: documentData.id,
+      });
 
-      // Reset file input
-      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
-      if (fileInput) fileInput.value = ""
+      setFile(null); // Clear file from state now that upload and DB insert are done.
+      // File input element value is cleared after AI call attempt.
 
-      // Call callback if provided
-      if (onUploadComplete) {
-        onUploadComplete(documentData)
-      }
-    } catch (error: any) {
+      await triggerAiProcessing(
+        documentData.storage_url,
+        documentData.bucket_name,
+        documentData.file_name, // Pass original filename from DB record
+        documentData // Pass the full dbDocument to onUploadComplete
+      );
+
+    } catch (error: any) { // This outer catch handles errors from Supabase upload or DB insert
       console.error("Upload error:", error)
       setMessage({
         type: "error",
-        text: `Upload failed: ${error.message || "Unknown error"}`,
+        // Error message might already be user-friendly if it came from the new throw statements
+        text: error.message || "Upload failed. An unexpected error occurred.",
       })
     } finally {
-      setUploading(false)
+      setUploading(false); // Covers Supabase upload and DB insert phase
     }
   }
+
+  const triggerAiProcessing = async (
+    filePath: string,
+    bucketName: string,
+    fileName: string, // original filename
+    dbDocument: any // document record from DB
+  ) => {
+    if (!await checkSessionAndProceed()) {
+      // If session lost before starting, update states and don't proceed
+      setProcessingAICall(false); // Ensure this is false if we bail early
+      setShowAiRetryButton(true); // Show retry because upload was done, but AI step cannot start
+      setAiProcessingError("Session expired before AI processing could start.");
+      // onUploadComplete might be called by the checkSessionAndProceed's effect or here explicitly
+      if (onUploadComplete) {
+        onUploadComplete({ dbDocument, aiError: "Session expired before AI processing could start." });
+      }
+      return;
+    }
+
+    setMessage({ type: "success", text: "Document uploaded. Initiating AI processing..." })
+    setProcessingAICall(true)
+    setAiProcessingError(null)
+    setShowAiRetryButton(false)
+
+    aiCallAbortControllerRef.current = new AbortController(); // Create new AbortController for this call
+    const signal = aiCallAbortControllerRef.current.signal;
+
+    let aiTaskId: string | undefined = undefined
+    let aiError: string | undefined = undefined
+
+    try {
+      const backendApiUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL || "http://localhost:8000"
+
+      const aiResponse = await fetch(`${backendApiUrl}/parse-document/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_path: filePath,
+          bucket_name: bucketName,
+          filename: fileName,
+          user_query: "",
+        }),
+        signal, // Pass the abort signal to fetch
+      })
+
+      if (!aiResponse.ok) {
+        const errorResult = await aiResponse.json().catch(() => ({}))
+        const errorDetail = errorResult.detail?.message || errorResult.detail || `AI processing API request failed: ${aiResponse.statusText} (Status: ${aiResponse.status})`
+        throw new Error(errorDetail)
+      }
+
+      const aiResult = await aiResponse.json()
+      aiTaskId = aiResult.task_id
+      setMessage({ type: "success", text: `Document uploaded successfully. AI processing started. Task ID: ${aiTaskId}` })
+      setLastUploadedDocumentInfo(null); // Clear info after successful AI call initiation
+
+    } catch (processingError: any) {
+      console.error("AI Processing API call error:", processingError)
+      aiError = processingError.message || "Unknown error during AI processing."
+      setAiProcessingError(aiError) // Store specific AI error
+      setShowAiRetryButton(true) // Show retry button
+      setMessage({
+        type: "warning",
+        text: `Document uploaded, but AI processing call failed: ${aiError}. You can retry processing.`,
+      })
+    } finally {
+      setProcessingAICall(false)
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+      if (fileInput) fileInput.value = "" // Clear file input after first attempt or retry
+
+      if (onUploadComplete) {
+        onUploadComplete({ dbDocument, aiTaskId, aiError })
+      }
+    }
+  }
+
+  const handleRetryAiProcessing = async () => {
+    if (!lastUploadedDocumentInfo) {
+      setMessage({ type: "error", text: "Cannot retry: Document information not found." });
+      setShowAiRetryButton(false); // Hide button if info is lost
+      return;
+    }
+    // Fetch the full document record again for onUploadComplete, though only id is strictly needed for retry
+    const {data: dbDoc, error: fetchErr} = await supabase.from("documents").select("*").eq("id", lastUploadedDocumentInfo.dbDocumentId).single();
+    if (fetchErr || !dbDoc) {
+         setMessage({ type: "error", text: `Cannot retry: Failed to retrieve document details. ${fetchErr?.message}` });
+         setShowAiRetryButton(false);
+         return;
+    }
+
+    await triggerAiProcessing(
+      lastUploadedDocumentInfo.filePath,
+      lastUploadedDocumentInfo.bucketName,
+      lastUploadedDocumentInfo.fileName,
+      dbDoc
+    );
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0]
@@ -490,7 +685,7 @@ export default function DocumentUpload({
             // Consolidated accept string based on defined MIME types (approximated)
             accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.xls,.xlsx,.txt,.csv"
             className="cursor-pointer"
-            disabled={availableBuckets.length === 0 || uploading}
+            disabled={availableBuckets.length === 0 || uploading || processingAICall || showAiRetryButton }
           />
           {/* Validation messages are handled by the main message state.
               This area remains for displaying selected file info. */}
@@ -532,15 +727,35 @@ export default function DocumentUpload({
           disabled={
             !file ||
             !selectedCaseId ||
-            uploading ||
+            uploading || // True during Supabase upload + DB insert
+            processingAICall ||
             loadingCases ||
             loadingStorage ||
-            availableBuckets.length === 0
+            availableBuckets.length === 0 ||
+            showAiRetryButton // Disable main upload if retry is pending
           }
           className="w-full"
         >
-          {uploading ? "Uploading..." : "Upload Document"}
+          {uploading
+            ? "Uploading file..."
+            : processingAICall
+              ? "Processing document..."
+              : "Upload Document"}
         </Button>
+
+        {/* Retry Button for AI Processing */}
+        {showAiRetryButton && !processingAICall && (
+          <div className="mt-4 text-center">
+            <p className="text-sm text-red-600 mb-2">AI processing previously failed: {aiProcessingError}</p>
+            <Button
+              onClick={handleRetryAiProcessing}
+              variant="outline"
+              disabled={processingAICall}
+            >
+              {processingAICall ? "Retrying AI Processing..." : "Retry AI Processing"}
+            </Button>
+          </div>
+        )}
 
         {/* Help Section */}
         {availableBuckets.length === 0 && (

@@ -64,6 +64,7 @@ Proper configuration of environment variables is crucial for the application to 
 3.  Edit `frontend/.env.local` and fill in the following variables:
     -   `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase project URL.
     -   `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Your Supabase project anon key.
+    -   `NEXT_PUBLIC_BACKEND_API_URL`: The complete base URL for your Python backend API. For local development, this is typically `http://localhost:8000`. This variable is used by the frontend to make calls to services like task status polling.
 
     These are public keys and are safe to be exposed to the browser. You can find these in your Supabase project settings under Project Settings > API.
 
@@ -77,7 +78,165 @@ Proper configuration of environment variables is crucial for the application to 
 3.  Edit `backend/.env` and fill in the following variables:
     -   `OPENAI_API_KEY`: Your OpenAI API key. This is required for the AI agents to function. You can obtain an API key from [OpenAI Platform](https://platform.openai.com/signup).
     -   `GEMINI_API_KEY` (Optional): Your Google Gemini API key if you plan to integrate or switch to Gemini models.
+    -   `ALLOWED_ORIGINS`: A comma-separated list of URLs that are allowed to make requests to the backend API (CORS configuration). For local development, this should typically be your frontend URL (e.g., `http://localhost:3000`). For production, list your deployed frontend domain(s). Example: `ALLOWED_ORIGINS=http://localhost:3000,https://your-frontend-app.com`.
+    -   `SUPABASE_URL`: Your Supabase project URL (the same one used for `NEXT_PUBLIC_SUPABASE_URL` in the frontend). This is needed by the backend for admin/service operations like generating signed URLs.
+    -   `SUPABASE_SERVICE_KEY`: Your Supabase project service role key. **This key has admin privileges and must be kept secret and secure.** Do not expose it on the client-side. It's used by the backend for privileged operations.
     -   The `.env` file can also be used to set `PYTHONPATH=.` if needed, although typically not required if running commands from the `backend` directory.
+
+## Supabase Storage Security and Validation
+
+To enhance security and ensure only allowed file types and sizes are uploaded, server-side validation should be implemented at the Supabase Storage layer. The 'documents' bucket **must be set to private**.
+
+### Recommended Approach: Edge Function
+
+The most flexible and robust method is to use a Supabase Edge Function triggered on new object creation in the 'documents' bucket.
+
+**Conceptual Edge Function (`validate-upload/index.ts`):**
+```typescript
+import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+const ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'image/jpeg',
+  'image/png',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv',
+];
+
+serve(async (req) => {
+  const payload = await req.json();
+  const record = payload.record; // For 'storage.object.created' trigger
+
+  if (!record || !record.metadata) {
+    console.warn('No record or metadata in payload:', payload);
+    return new Response(JSON.stringify({ error: 'Payload missing record or metadata' }), { status: 400 });
+  }
+
+  const { size, mimetype, bucket_id, name: objectPath } = record.metadata;
+
+  if (bucket_id !== 'documents') {
+    return new Response(JSON.stringify({ message: 'Not in documents bucket, skipping.' }), { status: 200 });
+  }
+
+  let validationError = null;
+
+  if (!ALLOWED_MIME_TYPES.includes(mimetype)) {
+    validationError = `Invalid file type: ${mimetype}.`;
+  } else if (size > MAX_FILE_SIZE_BYTES) {
+    validationError = `File size ${size} exceeds limit of ${MAX_FILE_SIZE_BYTES} bytes.`;
+  }
+
+  if (validationError) {
+    console.warn(`Validation failed for ${objectPath}: ${validationError}`);
+    // Delete the invalid file
+    const supabaseAdmin = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_KEY')!
+    );
+    const { error: deleteError } = await supabaseAdmin.storage
+      .from(bucket_id)
+      .remove([objectPath]);
+
+    if (deleteError) {
+      console.error(`Failed to delete invalid file ${objectPath}:`, deleteError);
+      return new Response(JSON.stringify({ error: `Validation failed and could not delete file: ${deleteError.message}` }), { status: 500 });
+    }
+    // Optionally, log this event to an audit table or send a notification.
+    return new Response(JSON.stringify({ error: `File rejected: ${validationError}` }), { status: 403 }); // 403 Forbidden or another suitable code
+  }
+
+  console.log(`File ${objectPath} validated successfully.`);
+  return new Response(JSON.stringify({ success: true }), { status: 200 });
+});
+```
+This Edge Function would be deployed to Supabase and configured to trigger on object creation in the 'documents' bucket. It requires `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` as environment variables.
+
+### Alternative: Storage RLS Policies (Potential Limitations)
+
+Row Level Security (RLS) policies on the `storage.objects` table can also be used, but direct access to reliable `mimetype` and `size` from `NEW.metadata` during an `INSERT` `WITH CHECK` clause can be tricky and might have limitations. The metadata might be fully populated only after the initial insert.
+
+**Conceptual RLS Policy (Verify carefully before production):**
+```sql
+-- Ensure the bucket is private and RLS is enabled on storage.objects
+-- This policy attempts to validate file type and size on upload to the 'documents' bucket.
+-- WARNING: The reliability of NEW.metadata fields at the time of INSERT check needs thorough testing.
+-- An Edge Function (see above) is generally more robust for this.
+
+CREATE POLICY "Restrict file types and size for documents bucket"
+ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (
+  bucket_id = 'documents' AND
+  (NEW.metadata ->> 'size')::bigint <= 10485760 AND -- 10MB (10 * 1024 * 1024)
+  (NEW.metadata ->> 'mimetype') IN (
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'image/jpeg',
+    'image/png',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/plain',
+    'text/csv'
+  )
+);
+
+-- Remember to also have policies for SELECT, UPDATE, DELETE as needed,
+-- restricting access based on user roles and ownership.
+-- Example: Allow users to select their own files or files related to their cases.
+```
+Users should test this RLS policy thoroughly. If it doesn't work as expected (e.g., blocks valid files or allows invalid ones due to metadata timing), the Edge Function approach is recommended.
+
+### RLS Policies for `documents` (Metadata) Table
+
+It's crucial to implement Row Level Security (RLS) policies on the `documents` table (which stores metadata about files) to ensure users can only access records they are authorized to see. This complements storage bucket security.
+
+**Conceptual Policies for `documents` Table:**
+
+*   **Clients can only see their own documents:**
+    ```sql
+    -- Assuming 'documents' table has a 'client_id' or 'user_id' column linked to the uploader/owner.
+    -- Or, access is determined via linked 'cases' table and 'case_assignments'.
+    -- Example if 'uploaded_by' stores the user's ID:
+    CREATE POLICY "Clients can view their own document records"
+    ON documents FOR SELECT
+    TO authenticated
+    USING (auth.uid() = uploaded_by);
+
+    CREATE POLICY "Clients can insert document records for themselves"
+    ON documents FOR INSERT
+    TO authenticated
+    WITH CHECK (auth.uid() = uploaded_by);
+    ```
+
+*   **Staff access based on case assignments:**
+    ```sql
+    -- This is more complex and depends on your schema (e.g., a 'case_assignments' table).
+    -- Conceptual: Allow staff to see document records for cases they are assigned to.
+    CREATE POLICY "Staff can view document records for assigned cases"
+    ON documents FOR SELECT
+    TO authenticated -- Should ideally be restricted to 'staff' role if possible via a function
+    USING (
+      EXISTS (
+        SELECT 1 FROM case_assignments ca
+        WHERE ca.case_id = documents.case_id AND ca.user_id = auth.uid()
+      )
+      -- Add OR condition if staff role has different levels of access based on user's role attribute
+      -- OR (SELECT role FROM users WHERE id = auth.uid()) = 'admin' -- If admins can see all
+    );
+    ```
+    Similar policies would be needed for `INSERT`, `UPDATE`, `DELETE` on the `documents` table, tailored to roles and ownership. For instance, only specific staff roles or the uploader might be allowed to update/delete.
+
+*   **Admin full access:** Often granted by bypassing RLS (if Supabase client uses service key) or a permissive policy for an 'admin' role.
+
+**Key Considerations for `documents` Table RLS:**
+*   These policies prevent users from even listing metadata (like file paths or bucket names) for documents they shouldn't access. This is a critical step before generating signed URLs, as a user should only be able to request a signed URL for a document they are authorized to access the metadata of.
+*   Ensure `UPDATE` and `DELETE` policies are also strictly defined to prevent unauthorized modification or deletion of document records.
 
 ### Resetting Your Environment (For Testing)
 

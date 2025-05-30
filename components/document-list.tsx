@@ -35,89 +35,50 @@ export default function DocumentList({ documents, caseId, isStaff, onDocumentDel
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [downloading, setDownloading] = useState<string | null>(null)
-  const [regenerating, setRegenerating] = useState<string | null>(null)
+  const [actionInProgress, setActionInProgress] = useState<string | null>(null) // Tracks doc.id for any action
   const supabase = createClientComponentClient()
 
-  const regenerateStorageUrl = async (documentId: string, filename: string) => {
-    setRegenerating(documentId)
+  // This function will now fetch a fresh signed URL on demand using the new API endpoint
+  // It no longer tries to "regenerate" or update the database.
+  const getFreshSignedUrl = async (documentId: string): Promise<string | null> => {
+    setActionInProgress(documentId)
     setError(null)
-
     try {
-      // Get the document to find its storage path
-      const { data: document, error: docError } = await supabase
-        .from("documents")
-        .select("*")
-        .eq("id", documentId)
-        .single()
-
-      if (docError || !document) {
-        throw new Error("Document not found")
+      const response = await fetch(`/api/download-document?documentId=${documentId}`)
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || `Failed to get fresh URL (status: ${response.status})`)
       }
-
-      // Try to get a new signed URL from the storage
-      const { data: signedUrlData, error: urlError } = await supabase.storage
-        .from("documents")
-        .createSignedUrl(document.storage_path || `${caseId}/${filename}`, 3600) // 1 hour expiry
-
-      if (urlError) {
-        // If signed URL fails, try to get public URL
-        const { data: publicUrlData } = supabase.storage
-          .from("documents")
-          .getPublicUrl(document.storage_path || `${caseId}/${filename}`)
-
-        if (publicUrlData?.publicUrl) {
-          // Update the document with new URL
-          const { error: updateError } = await supabase
-            .from("documents")
-            .update({ storage_url: publicUrlData.publicUrl })
-            .eq("id", documentId)
-
-          if (updateError) {
-            console.error("Error updating storage URL:", updateError)
-          }
-
-          return publicUrlData.publicUrl
-        }
-        throw urlError
+      const { signedUrl } = await response.json()
+      if (!signedUrl) {
+        throw new Error("No signed URL received from server.")
       }
-
-      // Update the document with new signed URL
-      const { error: updateError } = await supabase
-        .from("documents")
-        .update({ storage_url: signedUrlData.signedUrl })
-        .eq("id", documentId)
-
-      if (updateError) {
-        console.error("Error updating storage URL:", updateError)
-      }
-
-      return signedUrlData.signedUrl
+      return signedUrl
     } catch (error: any) {
-      console.error("Error regenerating storage URL:", error)
-      throw error
+      console.error("Error getting fresh signed URL:", error)
+      setError(`Failed to get link for document: ${error.message}`)
+      return null
     } finally {
-      setRegenerating(null)
+      setActionInProgress(null)
     }
   }
 
-  const handleDownload = async (documentId: string, filename: string, storageUrl: string) => {
-    setDownloading(documentId)
+  const handleOpen = async (documentId: string) => {
+    const freshUrl = await getFreshSignedUrl(documentId)
+    if (freshUrl) {
+      window.open(freshUrl, "_blank", "noopener,noreferrer")
+    }
+  }
+
+  const handleDownload = async (documentId: string, filename: string) => {
+    setActionInProgress(documentId) // Use common state for any action on a doc
     setError(null)
 
     try {
-      let downloadUrl = storageUrl
-
-      // First, try the existing URL
-      try {
-        const testResponse = await fetch(storageUrl, { method: "HEAD" })
-        if (!testResponse.ok) {
-          throw new Error("URL not accessible")
-        }
-      } catch {
-        // If the URL doesn't work, try to regenerate it
-        console.log("Storage URL not accessible, attempting to regenerate...")
-        downloadUrl = await regenerateStorageUrl(documentId, filename)
+      const downloadUrl = await getFreshSignedUrl(documentId)
+      if (!downloadUrl) {
+        // Error is already set by getFreshSignedUrl if it fails
+        return;
       }
 
       // Create download link
@@ -260,39 +221,35 @@ export default function DocumentList({ documents, caseId, isStaff, onDocumentDel
           </div>
 
           <div className="flex space-x-2 ml-4">
-            <a
-              href={doc.storage_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-800"
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => handleOpen(doc.id)}
+              disabled={actionInProgress === doc.id}
               title="Open in new tab"
+              className="text-blue-600 hover:text-blue-800"
             >
-              <ExternalLink className="h-5 w-5" />
+              {actionInProgress === doc.id ? <RefreshCw className="h-5 w-5 animate-spin" /> : <ExternalLink className="h-5 w-5" />}
               <span className="sr-only">View</span>
-            </a>
+            </Button>
 
-            <button
-              onClick={() => handleDownload(doc.id, doc.filename, doc.storage_url)}
-              className="text-green-600 hover:text-green-800 disabled:opacity-50"
-              disabled={downloading === doc.id}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => handleDownload(doc.id, doc.filename)}
+              className="text-green-600 hover:text-green-800"
+              disabled={actionInProgress === doc.id}
               title="Download file"
             >
-              <Download className="h-5 w-5" />
-              <span className="sr-only">{downloading === doc.id ? "Downloading..." : "Download"}</span>
-            </button>
+              {actionInProgress === doc.id ? <RefreshCw className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />}
+              <span className="sr-only">Download</span>
+            </Button>
 
             {isStaff && (
               <>
-                <button
-                  onClick={() => regenerateStorageUrl(doc.id, doc.filename)}
-                  className="text-orange-600 hover:text-orange-800 disabled:opacity-50"
-                  disabled={regenerating === doc.id}
-                  title="Refresh download link"
-                >
-                  <RefreshCw className={`h-5 w-5 ${regenerating === doc.id ? "animate-spin" : ""}`} />
-                  <span className="sr-only">Refresh link</span>
-                </button>
-
+                {/* The "Refresh download link" button is removed as links are now fetched on-demand.
+                    If a specific "re-analyze" or "re-process" functionality were needed,
+                    it would be a different kind of operation. */}
                 <button
                   onClick={() => setConfirmDelete(doc.id)}
                   className="text-red-600 hover:text-red-800"

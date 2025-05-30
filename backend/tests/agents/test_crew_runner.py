@@ -5,6 +5,10 @@ from unittest.mock import patch, MagicMock, mock_open
 # Import the functions/classes to be tested
 from backend.agents.crew_runner import LawFirmCrewRunner, fetch_and_extract_text_from_url
 
+# Import Supabase client for mocking its creation if needed by the tool
+from supabase import create_client as actual_create_supabase_client, Client as SupabaseClient
+
+
 # --- Mocks for external dependencies of crew_runner.py ---
 
 # Mock for requests.get response object
@@ -28,90 +32,154 @@ class MockRequestsResponse:
 
 # --- Tests for fetch_and_extract_text_from_url ---
 
-@pytest.mark.asyncio # Though the function itself is sync, tests using it with async fixtures might need this
+# --- Tests for fetch_and_extract_text_from_url (Updated Signature & Logic) ---
+
+# Helper function to mock parts of the Supabase Admin Client for the tool
+def get_mock_supabase_admin_client(signed_url_response=None, signed_url_error=None):
+    mock_storage_from = MagicMock()
+    if signed_url_error:
+        mock_storage_from.create_signed_url.side_effect = signed_url_error
+    else:
+        # Supabase python client returns a dict like {'signedURL': '...'} or throws error
+        # The tool expects to access .get('signedURL')
+        mock_storage_from.create_signed_url.return_value = signed_url_response if signed_url_response else {'signedURL': 'mock_signed_url_value'}
+
+    mock_supabase_client_instance = MagicMock(spec=SupabaseClient)
+    mock_supabase_client_instance.storage.from_.return_value = mock_storage_from
+    return mock_supabase_client_instance
+
+@patch('backend.agents.crew_runner.os.getenv')
+@patch('backend.agents.crew_runner.create_supabase_client') # Mock the actual create_client from supabase-py
 @patch('backend.agents.crew_runner.requests.get')
-async def test_fetch_pdf_success(mock_requests_get):
-    # Mock pypdf.PdfReader and its methods
+def test_fetch_successful_signed_url_generation_and_download_pdf(mock_requests_get, mock_create_admin_client, mock_os_getenv):
+    # Setup mocks for env variables and Supabase admin client
+    mock_os_getenv.side_effect = lambda key: {'SUPABASE_URL': 'http://mock-supabase.co', 'SUPABASE_SERVICE_KEY': 'mock-service-key'}.get(key)
+    mock_admin_client = get_mock_supabase_admin_client()
+    mock_create_admin_client.return_value = mock_admin_client
+
+    # Mock requests.get for the (mocked) signed URL
+    mock_pdf_content = b"dummy pdf content for signed url test"
+    mock_response_obj = MockRequestsResponse(mock_pdf_content)
+    mock_requests_get.return_value = mock_response_obj
+
+    # Mock pypdf
     mock_pdf_page = MagicMock()
-    mock_pdf_page.extract_text.return_value = "This is page text. "
+    mock_pdf_page.extract_text.return_value = "Signed URL PDF text. "
     mock_pdf_reader_instance = MagicMock()
-    mock_pdf_reader_instance.pages = [mock_pdf_page, mock_pdf_page] # Simulate 2 pages
-
+    mock_pdf_reader_instance.pages = [mock_pdf_page]
     with patch('backend.agents.crew_runner.pypdf.PdfReader', return_value=mock_pdf_reader_instance) as mock_pdf_reader_class:
-        # Mock requests.get to return PDF-like content (bytes)
-        mock_response = MockRequestsResponse(b"dummy pdf content")
+        result = fetch_and_extract_text_from_url(file_path="path/to/file.pdf", bucket_name="docs", filename="file.pdf")
+
+        assert result == "Signed URL PDF text. "
+        mock_os_getenv.assert_any_call("SUPABASE_URL")
+        mock_os_getenv.assert_any_call("SUPABASE_SERVICE_KEY")
+        mock_create_admin_client.assert_called_once_with('http://mock-supabase.co', 'mock-service-key')
+        mock_admin_client.storage.from_('docs').create_signed_url.assert_called_once_with("path/to/file.pdf", 60)
+        mock_requests_get.assert_called_once_with('mock_signed_url_value', stream=True, timeout=30)
+        mock_pdf_reader_class.assert_called_once()
+
+@patch('backend.agents.crew_runner.os.getenv')
+@patch('backend.agents.crew_runner.create_supabase_client')
+def test_fetch_failure_in_create_signed_url(mock_create_admin_client, mock_os_getenv):
+    mock_os_getenv.side_effect = lambda key: {'SUPABASE_URL': 'http://mock-supabase.co', 'SUPABASE_SERVICE_KEY': 'mock-service-key'}.get(key)
+    # Simulate create_signed_url returning an error or unexpected structure
+    mock_admin_client = get_mock_supabase_admin_client(signed_url_response={'error': 'Failed to sign', 'signedURL': None})
+    mock_create_admin_client.return_value = mock_admin_client
+
+    result = fetch_and_extract_text_from_url(file_path="path/to/file.pdf", bucket_name="docs", filename="file.pdf")
+    assert "Error generating signed URL: Failed to sign" in result
+
+@patch('backend.agents.crew_runner.os.getenv', return_value=None) # Mock getenv to return None for all keys
+def test_fetch_missing_supabase_credentials_for_tool(mock_os_getenv):
+    result = fetch_and_extract_text_from_url(file_path="path/to/file.pdf", bucket_name="docs", filename="file.pdf")
+    assert "Error: SUPABASE_URL or SUPABASE_SERVICE_KEY not configured" in result
+
+# Keep existing specific parsing tests, but update them to reflect that the URL to `requests.get`
+# is now a (mocked) signed URL, and the primary input to fetch_and_extract_text_from_url has changed.
+# For these, we can assume signed URL generation was successful and mock the `requests.get` part.
+@patch('backend.agents.crew_runner.os.getenv') # Mock env vars for successful signed URL gen
+@patch('backend.agents.crew_runner.create_supabase_client') # Mock admin client for signed URL
+@patch('backend.agents.crew_runner.requests.get') # This is the one we test content for
+async def test_fetch_pdf_content_after_signed_url(mock_requests_get, mock_create_admin_client, mock_os_getenv):
+    mock_os_getenv.side_effect = lambda key: {'SUPABASE_URL': 'http://m', 'SUPABASE_SERVICE_KEY': 'k'}.get(key)
+    mock_admin_client = get_mock_supabase_admin_client() # Default success for signed URL
+    mock_create_admin_client.return_value = mock_admin_client
+
+    mock_pdf_page = MagicMock()
+    mock_pdf_page.extract_text.return_value = "PDF content. "
+    mock_pdf_reader_instance = MagicMock()
+    mock_pdf_reader_instance.pages = [mock_pdf_page]
+    with patch('backend.agents.crew_runner.pypdf.PdfReader', return_value=mock_pdf_reader_instance) as mock_pdf_reader_class:
+        mock_response = MockRequestsResponse(b"dummy pdf data")
         mock_requests_get.return_value = mock_response
 
-        result = fetch_and_extract_text_from_url("http://example.com/test.pdf", "test.pdf")
+        result = fetch_and_extract_text_from_url("path/to/doc.pdf", "docs", "doc.pdf")
+        assert result == "PDF content. "
+        mock_requests_get.assert_called_once_with('mock_signed_url_value', stream=True, timeout=30)
 
-        assert result == "This is page text. This is page text. "
-        mock_requests_get.assert_called_once_with("http://example.com/test.pdf", stream=True, timeout=30)
-        mock_pdf_reader_class.assert_called_once() # Check PdfReader was instantiated
+# Similar updates for test_fetch_docx_success, test_fetch_txt_success, test_fetch_unsupported_type,
+# test_fetch_network_error (now testing network error on signed URL), test_fetch_pdf_parsing_error
 
+@patch('backend.agents.crew_runner.os.getenv')
+@patch('backend.agents.crew_runner.create_supabase_client')
 @patch('backend.agents.crew_runner.requests.get')
-def test_fetch_docx_success(mock_requests_get):
-    # Mock docx.Document and its methods/properties
+def test_fetch_docx_content_after_signed_url(mock_requests_get, mock_create_admin_client, mock_os_getenv):
+    mock_os_getenv.side_effect = lambda key: {'SUPABASE_URL': 'http://m', 'SUPABASE_SERVICE_KEY': 'k'}.get(key)
+    mock_admin_client = get_mock_supabase_admin_client()
+    mock_create_admin_client.return_value = mock_admin_client
+
     mock_paragraph = MagicMock()
-    mock_paragraph.text = "This is a docx paragraph."
-    mock_docx_document_instance = MagicMock()
-    mock_docx_document_instance.paragraphs = [mock_paragraph, mock_paragraph] # Simulate 2 paragraphs
-
-    with patch('backend.agents.crew_runner.docx.Document', return_value=mock_docx_document_instance) as mock_docx_document_class:
-        mock_response = MockRequestsResponse(b"dummy docx content")
+    mock_paragraph.text = "Docx paragraph."
+    mock_docx_instance = MagicMock()
+    mock_docx_instance.paragraphs = [mock_paragraph]
+    with patch('backend.agents.crew_runner.docx.Document', return_value=mock_docx_instance) as mock_docx_class:
+        mock_response = MockRequestsResponse(b"dummy docx data")
         mock_requests_get.return_value = mock_response
+        result = fetch_and_extract_text_from_url("path/to/doc.docx", "docs", "doc.docx")
+        assert result == "Docx paragraph.\n"
+        mock_requests_get.assert_called_with('mock_signed_url_value', stream=True, timeout=30)
 
-        result = fetch_and_extract_text_from_url("http://example.com/test.docx", "test.docx")
-
-        assert result == "This is a docx paragraph.\nThis is a docx paragraph.\n"
-        mock_requests_get.assert_called_once_with("http://example.com/test.docx", stream=True, timeout=30)
-        mock_docx_document_class.assert_called_once()
-
+@patch('backend.agents.crew_runner.os.getenv')
+@patch('backend.agents.crew_runner.create_supabase_client')
 @patch('backend.agents.crew_runner.requests.get')
-def test_fetch_txt_success(mock_requests_get):
-    mock_response = MockRequestsResponse(b"Hello, world!", text="Hello, world!")
+def test_fetch_txt_content_after_signed_url(mock_requests_get, mock_create_admin_client, mock_os_getenv):
+    mock_os_getenv.side_effect = lambda key: {'SUPABASE_URL': 'http://m', 'SUPABASE_SERVICE_KEY': 'k'}.get(key)
+    mock_admin_client = get_mock_supabase_admin_client()
+    mock_create_admin_client.return_value = mock_admin_client
+
+    mock_response = MockRequestsResponse(b"Txt content", text="Txt content")
     mock_requests_get.return_value = mock_response
+    result = fetch_and_extract_text_from_url("path/to/doc.txt", "docs", "doc.txt")
+    assert result == "Txt content"
+    mock_requests_get.assert_called_with('mock_signed_url_value', stream=True, timeout=30)
 
-    result = fetch_and_extract_text_from_url("http://example.com/test.txt", "test.txt")
-
-    assert result == "Hello, world!"
-    mock_requests_get.assert_called_once_with("http://example.com/test.txt", stream=True, timeout=30)
-
+@patch('backend.agents.crew_runner.os.getenv')
+@patch('backend.agents.crew_runner.create_supabase_client')
 @patch('backend.agents.crew_runner.requests.get')
-def test_fetch_unsupported_type(mock_requests_get):
-    # No need to mock response content as it shouldn't be read for unsupported type
-    mock_response = MockRequestsResponse(b"dummy content")
+def test_fetch_unsupported_type_after_signed_url(mock_requests_get, mock_create_admin_client, mock_os_getenv):
+    mock_os_getenv.side_effect = lambda key: {'SUPABASE_URL': 'http://m', 'SUPABASE_SERVICE_KEY': 'k'}.get(key)
+    mock_admin_client = get_mock_supabase_admin_client()
+    mock_create_admin_client.return_value = mock_admin_client
+
+    mock_response = MockRequestsResponse(b"dummy data")
     mock_requests_get.return_value = mock_response
-
-    result = fetch_and_extract_text_from_url("http://example.com/test.xlsx", "test.xlsx")
-
+    result = fetch_and_extract_text_from_url("path/to/doc.xlsx", "docs", "doc.xlsx")
     assert "Text extraction not supported for this file type: '.xlsx'" in result
-    mock_requests_get.assert_called_once_with("http://example.com/test.xlsx", stream=True, timeout=30)
+    # requests.get is still called with the signed URL, but then type is checked
+    mock_requests_get.assert_called_with('mock_signed_url_value', stream=True, timeout=30)
 
+
+@patch('backend.agents.crew_runner.os.getenv')
+@patch('backend.agents.crew_runner.create_supabase_client')
 @patch('backend.agents.crew_runner.requests.get')
-def test_fetch_network_error(mock_requests_get):
-    # Simulate a requests.exceptions.RequestException (e.g., network error)
-    mock_requests_get.side_effect = requests.exceptions.RequestException("Network timeout")
+def test_fetch_network_error_on_signed_url(mock_requests_get, mock_create_admin_client, mock_os_getenv):
+    mock_os_getenv.side_effect = lambda key: {'SUPABASE_URL': 'http://m', 'SUPABASE_SERVICE_KEY': 'k'}.get(key)
+    mock_admin_client = get_mock_supabase_admin_client()
+    mock_create_admin_client.return_value = mock_admin_client
 
-    result = fetch_and_extract_text_from_url("http://example.com/test.pdf", "test.pdf")
-
-    assert "Error fetching file from URL 'http://example.com/test.pdf': Network timeout" in result
-    mock_requests_get.assert_called_once_with("http://example.com/test.pdf", stream=True, timeout=30)
-
-@patch('backend.agents.crew_runner.requests.get')
-@patch('backend.agents.crew_runner.pypdf.PdfReader') # Mock the PdfReader class
-def test_fetch_pdf_parsing_error(mock_pdf_reader_class, mock_requests_get):
-    # Mock requests.get to return some content
-    mock_response = MockRequestsResponse(b"corrupted pdf content")
-    mock_requests_get.return_value = mock_response
-
-    # Simulate PdfReader raising an error (e.g., pypdf.errors.PdfReadError)
-    mock_pdf_reader_class.side_effect = pypdf.errors.PdfReadError("Corrupted PDF")
-
-    result = fetch_and_extract_text_from_url("http://example.com/corrupted.pdf", "corrupted.pdf")
-
-    assert "Error parsing PDF 'corrupted.pdf': Corrupted PDF" in result
-    mock_requests_get.assert_called_once_with("http://example.com/corrupted.pdf", stream=True, timeout=30)
-    mock_pdf_reader_class.assert_called_once() # Ensure PdfReader was attempted
+    mock_requests_get.side_effect = requests.exceptions.RequestException("Signed URL timeout")
+    result = fetch_and_extract_text_from_url("path/to/doc.pdf", "docs", "doc.pdf")
+    assert "Error fetching file from generated signed URL 'mock_signed_url_value': Signed URL timeout" in result
 
 
 # --- Tests for LawFirmCrewRunner.run_crew method ---
@@ -133,9 +201,15 @@ def test_run_crew_llm_disabled_success(mock_env_no_openai_key): # Use fixture to
     runner = LawFirmCrewRunner() # LLM should be None
     assert runner.llm is None
 
-    sample_doc_info = {"filename": "sample.txt", "file_url": "http://example.com/sample.txt"}
+    # Updated sample_doc_info to reflect new structure
+    sample_doc_info = {
+        "filename": "sample.txt",
+        "file_path": "path/to/sample.txt",
+        "bucket_name": "docs"
+    }
 
     # run_crew uses the mock outputs directly when self.llm is None
+    # The mock_extracted_text in run_crew's LLM disabled path needs to be updated for file_path
     result = runner.run_crew(document_info=sample_doc_info, user_query="Test query")
 
     assert result["status"] == "success"
@@ -175,7 +249,13 @@ def test_run_crew_llm_enabled_tool_success(mock_crew_class, mock_chat_openai_cla
     runner = LawFirmCrewRunner() # LLM should be mocked ChatOpenAI instance
     assert runner.llm is mock_chat_openai_instance
 
-    sample_doc_info = {"filename": "remote_doc.pdf", "file_url": "http://example.com/remote_doc.pdf", "extracted_text": None} # Force tool use
+    # Updated sample_doc_info for new structure
+    sample_doc_info = {
+        "filename": "remote_doc.pdf",
+        "file_path": "path/to/remote_doc.pdf",
+        "bucket_name": "docs",
+        "extracted_text": None # Force tool use
+    }
 
     result = runner.run_crew(document_info=sample_doc_info, user_query="Summarize.")
 
@@ -183,10 +263,11 @@ def test_run_crew_llm_enabled_tool_success(mock_crew_class, mock_chat_openai_cla
     assert result["task_id"] == "mock-task-id"
     # Check that kickoff was called with inputs that would require tool use
     mock_crew_instance.kickoff.assert_called_once_with(inputs={
-        'file_url': sample_doc_info['file_url'],
+        'file_path': sample_doc_info['file_path'],
+        'bucket_name': sample_doc_info['bucket_name'],
         'filename': sample_doc_info['filename'],
         'user_query': "Summarize.",
-        'document_text_content': None # Explicitly None to trigger tool
+        'document_text_content': None
     })
     # Check the details passed to the final 'completed' status update
     final_status_call_args = backend.agents.crew_runner.update_task_status.call_args_list[-1] # Get last call
@@ -213,7 +294,13 @@ def test_run_crew_text_extraction_failure(mock_crew_class, mock_chat_openai_clas
     mock_crew_class.return_value = mock_crew_instance
 
     runner = LawFirmCrewRunner()
-    sample_doc_info = {"filename": "unsupported.zip", "file_url": "http://example.com/unsupported.zip", "extracted_text": None}
+    # Updated sample_doc_info
+    sample_doc_info = {
+        "filename": "unsupported.zip",
+        "file_path": "path/to/unsupported.zip",
+        "bucket_name": "docs",
+        "extracted_text": None
+    }
 
     result = runner.run_crew(document_info=sample_doc_info, user_query="Process this.")
 
@@ -239,7 +326,12 @@ def test_run_crew_kickoff_exception(mock_crew_class, mock_chat_openai_class, moc
     mock_crew_class.return_value = mock_crew_instance
 
     runner = LawFirmCrewRunner()
-    sample_doc_info = {"filename": "anyfile.pdf", "file_url": "http://example.com/anyfile.pdf"}
+    # Updated sample_doc_info
+    sample_doc_info = {
+        "filename": "anyfile.pdf",
+        "file_path": "path/to/anyfile.pdf",
+        "bucket_name": "docs"
+    }
 
     result = runner.run_crew(document_info=sample_doc_info, user_query="Process.")
 

@@ -295,14 +295,32 @@ export default function DocumentsPage() {
               <DocumentUpload
                 userId={currentUserId}
                 userRole={currentUserRole}
-                onUploadComplete={(doc) => {
-                  setIsUploadModalOpen(false)
-                  fetchDocuments() // Refresh document list
-                  toast({
-                    title: "Upload Successful",
-                    description: `${doc.file_name} has been uploaded.`,
-                    variant: "success",
-                  })
+                  onUploadComplete={(uploadResult) => {
+                    setIsUploadModalOpen(false);
+                    if (uploadResult.dbDocument) {
+                      fetchDocuments(); // Refresh document list
+                      if (uploadResult.aiTaskId && !uploadResult.aiError) {
+                        toast({
+                          title: "Upload Successful",
+                          description: `Document "${uploadResult.dbDocument.file_name}" uploaded. AI processing started (Task ID: ${uploadResult.aiTaskId}).`,
+                          variant: "success",
+                        });
+                      } else if (uploadResult.aiError) {
+                        toast({
+                          title: "Upload Complete, AI Issue",
+                          description: `Document "${uploadResult.dbDocument.file_name}" uploaded, but AI processing call failed: ${uploadResult.aiError}. You may be able to retry from the upload modal.`,
+                          variant: "warning",
+                          duration: 10000,
+                        });
+                      } else {
+                         toast({
+                          title: "Upload Successful",
+                          description: `Document "${uploadResult.dbDocument.file_name}" has been uploaded. AI processing status unknown.`,
+                          variant: "success",
+                        });
+                      }
+                    }
+                    // If dbDocument is null, DocumentUpload handles internal error message.
                 }}
               />
             )}

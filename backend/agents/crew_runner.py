@@ -5,13 +5,111 @@ import os
 import uuid # Standard library for generating unique IDs
 import json # For handling JSON strings, especially from LLM outputs
 from textwrap import dedent # For cleaner multi-line string definitions (e.g., backstories)
+import io # For handling byte streams for file processing
+
+# Third-party libraries for file processing
+import requests
+import pypdf
+import docx # python-docx library
 
 from crewai import Agent, Task, Crew, Process # Core Crew AI components
 from langchain_openai import ChatOpenAI # Specific LLM implementation from Langchain
+from langchain.tools import tool # For creating tools from functions
 
-# Local imports for status tracking and (previously) task generation
+# Local imports for status tracking
 from backend.agents.status import update_task_status, get_agent_status
+from supabase import create_client as create_supabase_client, Client as SupabaseClient
+
 # Note: generate_legal_tasks from task_generator.py is no longer directly used here.
+
+# --- File Processing Tool Definition ---
+@tool("document_content_fetcher_tool")
+def fetch_and_extract_text_from_url(file_path: str, bucket_name: str, filename: str) -> str:
+    """
+    Generates a signed URL for a document in Supabase Storage, fetches it, and extracts its text content.
+    Supports PDF (.pdf), Word (.docx), and plain text (.txt) files.
+    'file_path', 'bucket_name', and 'filename' are used to locate and process the file.
+    Returns the extracted text or an error message if extraction fails or the type is unsupported.
+    Requires SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables for admin client.
+    """
+    print(f"Tool: Attempting to process file: {filename}, Path: {file_path}, Bucket: {bucket_name}")
+
+    signed_file_url = ""
+    try:
+        # Initialize Supabase admin client to generate signed URL
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY")
+
+        if not supabase_url or not supabase_service_key:
+            return "Error: SUPABASE_URL or SUPABASE_SERVICE_KEY not configured for the tool."
+
+        supabase_admin: SupabaseClient = create_supabase_client(supabase_url, supabase_service_key)
+
+        signed_url_response = supabase_admin.storage.from_(bucket_name).create_signed_url(file_path, 60) # 60 seconds expiry
+        signed_file_url = signed_url_response.get('signedURL') # Corrected key access
+        if not signed_file_url:
+             # Check if there's an error in the response if signedURL is not found
+            error_detail = signed_url_response.get('error', 'Unknown error generating signed URL')
+            return f"Error generating signed URL: {error_detail}. Path: {file_path}, Bucket: {bucket_name}"
+
+
+        print(f"Tool: Generated signed URL: {signed_file_url} for file: {filename}")
+
+        response = requests.get(signed_file_url, stream=True, timeout=30)
+        response.raise_for_status()
+
+        extension = os.path.splitext(filename)[1].lower()
+        extracted_text = ""
+
+        if extension == '.pdf':
+            bytes_io = io.BytesIO(response.content)
+            pdf_reader = pypdf.PdfReader(bytes_io)
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                extracted_text += page.extract_text() or "" # Add empty string if None
+            if not extracted_text:
+                return f"Text extraction from PDF '{filename}' resulted in empty content. The PDF might be image-based or password-protected."
+            print(f"Tool: Successfully extracted text from PDF: {filename}")
+            return extracted_text
+
+        elif extension == '.docx':
+            bytes_io = io.BytesIO(response.content)
+            document = docx.Document(bytes_io)
+            for para in document.paragraphs:
+                extracted_text += para.text + "\n"
+            if not extracted_text:
+                 return f"Text extraction from DOCX '{filename}' resulted in empty content."
+            print(f"Tool: Successfully extracted text from DOCX: {filename}")
+            return extracted_text
+
+        elif extension == '.txt':
+            # Assuming UTF-8 encoding, which is common.
+            # response.text will decode based on Content-Type header or default to ISO-8859-1 if not specified.
+            # For more robust TXT handling, consider chardet or specifying encoding.
+            extracted_text = response.text
+            if not extracted_text:
+                return f"Text extraction from TXT '{filename}' resulted in empty content."
+            print(f"Tool: Successfully extracted text from TXT: {filename}")
+            return extracted_text
+
+        else:
+            unsupported_msg = f"Text extraction not supported for this file type: '{extension}' (Filename: {filename}). Signed URL was: {signed_file_url}"
+            print(f"Tool: {unsupported_msg}")
+            return unsupported_msg
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Error fetching file from generated signed URL '{signed_file_url}': {str(e)}"
+        print(f"Tool: {error_msg}")
+        return error_msg
+    except pypdf.errors.PdfReadError as e:
+        error_msg = f"Error parsing PDF '{filename}' (from signed URL '{signed_file_url}'): {str(e)}. The file might be corrupted or password-protected."
+        print(f"Tool: {error_msg}")
+        return error_msg
+    except Exception as e: # Catch other potential errors during parsing (e.g., from python-docx)
+        error_msg = f"Error processing file '{filename}' (type: '{extension}'): {str(e)}"
+        print(f"Tool: {error_msg}")
+        return error_msg
+# --- End File Processing Tool Definition ---
 
 
 class LawFirmCrewRunner:
@@ -62,13 +160,22 @@ class LawFirmCrewRunner:
         }
 
         # Agent for parsing and summarizing documents.
+        # This agent now has access to the document_content_fetcher_tool.
         self.document_parser_agent = Agent(
             role='DocumentParserAgent',
-            goal='Parse and extract key information and a summary from documents. If document text is provided, use it. Otherwise, state that text extraction from URL is not yet implemented but provide a mock text for summarization.',
+            goal=dedent("""\
+                Parse and extract key information and a summary from documents.
+                If 'document_text_content' is directly provided in your input, use that as the document's text.
+                Otherwise, you MUST use the 'document_content_fetcher_tool' with the 'file_path', 'bucket_name', and 'filename'
+                (from your input) to fetch and extract the document's text content.
+                If the tool returns an error message (e.g., config error, signed URL error, unsupported file type, fetch error, parsing error),
+                that error message should be used as the 'extracted_text' in your output.
+                Finally, provide a concise summary of the (potentially error) 'extracted_text' (approx. 150-200 words).
+                If summarizing an error message, the summary should state that the document could not be processed and why."""),
             backstory=dedent("""A specialized agent for dissecting document content. 
-            It focuses on extracting the full text and then creating a concise summary."""),
-            # TODO: Implement a real document fetching tool for URLs when doc_text_content is not provided.
-            # This agent would then need a tool like a web scraper or PDF text extractor.
+            It focuses on extracting the full text using available tools if necessary,
+            and then creating a concise summary of the content or any processing errors."""),
+            tools=[fetch_and_extract_text_from_url], # Assign the new tool
             **common_agent_args
         )
 
@@ -109,14 +216,17 @@ class LawFirmCrewRunner:
         print(f"CrewRunner: Main Task ID for this run: {self.main_task_id}")
         
         filename = document_info.get("filename", "N/A")
-        file_url = document_info.get("file_url", "N/A")
-        # Prioritize pre-extracted text if available, as it avoids needing a web scraping tool.
-        doc_text_content = document_info.get("extracted_text") 
+        # file_url is no longer passed directly from main.py, tool will generate it from file_path and bucket_name
+        file_path = document_info.get("file_path", "N/A")
+        bucket_name = document_info.get("bucket_name", "N/A")
+        doc_text_content = document_info.get("extracted_text") # For potentially pre-extracted text
+
+        print(f"CrewRunner: Processing document '{filename}' from path '{file_path}' in bucket '{bucket_name}'.")
         
-        # Log if pre-extracted text is missing, as it affects the DocumentParserAgent's behavior.
-        if not doc_text_content and self.llm: 
-             print(f"CrewRunner: No pre-extracted text for {filename}. DocumentParserAgent will use mock text for summarization if URL processing isn't available (as no web tool is integrated yet).")
-        
+        # Log if pre-extracted text is missing, agent will use the tool.
+        if not doc_text_content and self.llm:
+            print(f"CrewRunner: No pre-extracted text for {filename}. DocumentParserAgent will use the tool.")
+
         actual_crew_result = None # To store the final output from the crew.
 
         try:
@@ -126,23 +236,44 @@ class LawFirmCrewRunner:
             # --- Define Parsing Task ---
             # This task is handled by the DocumentParserAgent.
             # Its goal is to extract text (if not provided) and summarize it.
-            parsing_task_desc = (
-                f'Analyze the document: {filename}. '
-                f'Input document URL (for context, if available): {file_url}. '
-            )
-            if doc_text_content:
-                # If text is already extracted, the agent should use it.
-                parsing_task_desc += "Use the provided document_text_content as the primary source for extraction and summarization. "
-            else:
-                # If no text, and LLM is active, agent should acknowledge lack of web tool and use mock.
-                # TODO: Integrate a web scraping or document fetching tool here.
-                parsing_task_desc += "No direct text content provided. If you had a web scraping tool, you would use it on the document_url. For now, acknowledge this and create a mock document text. "
-            
-            parsing_task_desc += 'Then, provide a concise summary of the text (approx. 150-200 words).'
+            parsing_task_desc = dedent(f"""\
+                Analyze the document named '{filename}'.
+                You are given its 'file_path': '{file_path}' and 'bucket_name': '{bucket_name}'.
+                Your primary goal is to obtain the text content of this document.
+
+                Instructions:
+                1. Check if 'document_text_content' is already provided in your input.
+                   - If YES: Use this text directly for the next step.
+                   - If NO: You MUST use the 'document_content_fetcher_tool'. Provide it with the 'file_path' ('{file_path}'), 'bucket_name' ('{bucket_name}'), and 'filename' ('{filename}') from your input to get the text.
+
+                2. Once you have the text (either provided directly or fetched by the tool):
+                   - This text (or any error message from the tool if fetching failed) will be the 'extracted_text'.
+                   - Generate a concise summary of this 'extracted_text' (approx. 150-200 words).
+                   - If 'extracted_text' is an error message (e.g., "Text extraction not supported..."), your summary should reflect that the document could not be processed and briefly state the reason.
+            """)
             
             parsing_task = Task(
                 description=parsing_task_desc,
-                expected_output='A JSON object containing two keys: "extracted_text" (string) and "summary" (string). If using mock text, clearly state it in the "extracted_text" field.',
+                expected_output=dedent("""\
+                    A JSON object containing two keys:
+                    1. "extracted_text": A string containing the full text of the document, or an error message if text extraction failed (e.g., "Text extraction not supported for .xlsx files", "Error fetching file from URL...").
+                    2. "summary": A string containing a concise summary (150-200 words) of the "extracted_text". If "extracted_text" is an error message, the summary should indicate that processing failed and why.
+                    Example for successful extraction:
+                    {
+                        "extracted_text": "The full text of the document...",
+                        "summary": "This document discusses..."
+                    }
+                    Example for a failed extraction (e.g. unsupported type):
+                    {
+                        "extracted_text": "Text extraction not supported for this file type: '.xlsx' (Filename: data.xlsx).",
+                        "summary": "The document 'data.xlsx' could not be processed because its file type (.xlsx) is not supported for text extraction."
+                    }
+                    Example for a failed fetch:
+                    {
+                        "extracted_text": "Error fetching file from URL 'http://example.com/missing.pdf': 404 Client Error: Not Found for url: http://example.com/missing.pdf",
+                        "summary": "The document 'missing.pdf' could not be processed because it could not be fetched from the provided URL (404 Not Found)."
+                    }
+                """),
                 agent=self.document_parser_agent,
                 async_execution=False # Run tasks sequentially for now.
             )
@@ -176,9 +307,11 @@ class LawFirmCrewRunner:
                 # Inputs for the kickoff are available to all tasks in the crew.
                 # 'document_text_content' allows passing pre-extracted text directly.
                 kickoff_inputs = {
-                    'document_url': file_url,
+                    'file_path': file_path,
+                    'bucket_name': bucket_name,
+                    'filename': filename,
                     'user_query': user_query or "", 
-                    'document_text_content': doc_text_content or "" 
+                    'document_text_content': doc_text_content or ""
                 }
                 actual_crew_result = crew.kickoff(inputs=kickoff_inputs)
                 
@@ -192,9 +325,9 @@ class LawFirmCrewRunner:
                 print(f"CrewRunner: LLM not available. Running mock crew for Task ID: {self.main_task_id}")
                 
                 # Simulate output for parsing_task.
-                mock_extracted_text = f"This is MOCK extracted text from '{filename}'. Actual text extraction from URL ({file_url}) is not implemented without tools/LLM." if not doc_text_content else doc_text_content
+                # Note: In the mock path, the tool is not actually called, so we simulate based on whether doc_text_content was provided.
+                mock_extracted_text = doc_text_content if doc_text_content else f"This is MOCK extracted text for '{filename}'. (File path: {file_path}, Bucket: {bucket_name}). Tool not used in mock LLM-disabled mode."
                 mock_summary = f"This is a MOCK summary for '{filename}'. It highlights key MOCK points of the document."
-                # Agents are expected to return strings, so mock outputs are JSON strings.
                 mock_parsing_output_str = json.dumps({ 
                     "extracted_text": mock_extracted_text,
                     "summary": mock_summary
@@ -223,9 +356,43 @@ class LawFirmCrewRunner:
                 actual_crew_result = json.dumps(mock_task_definitions) # Result is a JSON string.
                 print(f"CrewRunner: Mock task_def_task output: {actual_crew_result}")
 
-            # Final status update: Crew processing is complete.
-            update_task_status(self.main_task_id, 'completed', 'Crew processing finished.', details=actual_crew_result)
-            return {"status": "success", "task_id": self.main_task_id, "results": actual_crew_result}
+            # --- Process Crew Results and Handle Potential Extraction Errors ---
+            final_status_details = {"crew_output": actual_crew_result}
+            parsing_task_output_str = crew.tasks[0].output.raw_output if crew.tasks and crew.tasks[0].output else None
+
+            if parsing_task_output_str:
+                try:
+                    parsing_result = json.loads(parsing_task_output_str)
+                    final_status_details["parsing_task_output"] = parsing_result
+
+                    extracted_text_from_parser = parsing_result.get("extracted_text", "")
+                    # Check for known error strings from the fetch_and_extract_text_from_url tool or empty results
+                    if not extracted_text_from_parser or \
+                       "Error fetching file" in extracted_text_from_parser or \
+                       "Text extraction not supported" in extracted_text_from_parser or \
+                       "Error parsing" in extracted_text_from_parser or \
+                       "resulted in empty content" in extracted_text_from_parser:
+
+                        final_status_details["text_extraction_status"] = "failed"
+                        final_status_details["text_extraction_detail"] = extracted_text_from_parser
+                        # Modify the main message to reflect this issue
+                        status_message = f'Crew processing finished for {filename}, but text extraction failed or yielded no content.'
+                        update_task_status(self.main_task_id, 'completed_with_issues', status_message, details=final_status_details)
+                        # The overall status is still "success" as the crew ran, but results indicate the issue.
+                        return {"status": "success_with_issues", "task_id": self.main_task_id, "results": final_status_details}
+
+                except json.JSONDecodeError:
+                    print(f"CrewRunner: Could not parse JSON output from parsing_task: {parsing_task_output_str}")
+                    # Store the raw output if JSON parsing fails
+                    final_status_details["parsing_task_output_raw"] = parsing_task_output_str
+                    final_status_details["text_extraction_status"] = "unknown_parser_output"
+            else:
+                print("CrewRunner: No output found for parsing_task.")
+                final_status_details["text_extraction_status"] = "no_parser_output"
+
+            # Default final status update if no specific extraction errors were caught above
+            update_task_status(self.main_task_id, 'completed', f'Crew processing finished successfully for {filename}.', details=final_status_details)
+            return {"status": "success", "task_id": self.main_task_id, "results": final_status_details}
 
         except Exception as e:
             # Catch any exceptions during crew execution.

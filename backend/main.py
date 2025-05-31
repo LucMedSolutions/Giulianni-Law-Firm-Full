@@ -2,7 +2,8 @@
 # This file defines the FastAPI application, its endpoints, and handles incoming HTTP requests.
 # It serves as the main entry point for the backend API.
 
-import os # Added for potential environment variable usage in CORS
+import os # For environment variables
+from dotenv import load_dotenv # For loading .env file for local development
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware # For handling Cross-Origin Resource Sharing
@@ -13,17 +14,23 @@ from agents.crew_runner import get_crew_runner_instance
 from agents.task_generator import generate_legal_tasks # Still used by the (potentially deprecated) /generate-task/ endpoint
 from agents.status import get_agent_status, update_task_status # update_task_status used for fallback error handling
 
+# Load environment variables from .env file (especially for local development)
+load_dotenv()
+
 # Initialize the FastAPI application
 app = FastAPI(title="Giulianni Law Firm AI Backend")
 
-# Configure CORS middleware to allow requests from specified frontend origins.
-# This is important for development and production when frontend and backend are on different domains/ports.
-# TODO: For production, restrict allow_origins to specific frontend domains 
-# for enhanced security. This can be done via environment variables.
-# Example: allow_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,https://your-prod-domain.com").split(",")
+# Configure CORS middleware
+# Fetch allowed origins from environment variable, defaulting for local development
+default_allowed_origins = "http://localhost:3000" # Default if ALLOWED_ORIGINS is not set
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", default_allowed_origins)
+allowed_origins_list = [origin.strip() for origin in allowed_origins_str.split(',')]
+
+print(f"Configuring CORS with allowed origins: {allowed_origins_list}") # For debugging/verification
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Changed for flexibility, see TODO above
+    allow_origins=allowed_origins_list, # Use the list from environment variables
     allow_credentials=True, # Allows cookies to be included in requests
     allow_methods=["*"], # Allows all HTTP methods
     allow_headers=["*"], # Allows all headers
@@ -32,7 +39,8 @@ app.add_middleware(
 # Pydantic model for the /parse-document/ request body.
 # This ensures that incoming requests have the expected structure and data types.
 class ParseDocumentRequest(BaseModel):
-    file_url: str # URL of the document to be processed
+    file_path: str # Path of the document in Supabase storage
+    bucket_name: str # Name of the Supabase bucket where the file is stored
     filename: str # Original filename of the document
     user_query: str | None = None # Optional user query related to the document
 
@@ -47,13 +55,32 @@ async def parse_document_endpoint(request: ParseDocumentRequest, background_task
     It receives document information and an optional user query, then starts a crew run.
     Currently, the crew run is synchronous but is designed to be made asynchronous.
     """
-    print(f"Received /parse-document/ request for file: {request.filename}, URL: {request.file_url}, Query: {request.user_query}")
+    print(f"Received /parse-document/ request for file: {request.filename}, Path: {request.file_path}, Bucket: {request.bucket_name}, Query: {request.user_query}")
+
+    # --- Server-Side Filename Validation ---
+    # TODO: This filename extension check is a basic validation.
+    # Robust server-side validation should be enforced by Supabase Storage policies/functions upon upload.
+    ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.png', '.txt', '.csv']
+    try:
+        file_ext = os.path.splitext(request.filename)[1].lower()
+        if not file_ext: # Check if extension could be extracted
+             raise HTTPException(status_code=400, detail=f"Could not determine file extension for filename: {request.filename}. An extension is required.")
+        if file_ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Invalid file type based on filename extension: '{file_ext}'. Allowed extensions: {', '.join(ALLOWED_EXTENSIONS)}")
+    except Exception as e: # Catch any error during filename processing
+        print(f"Error during filename validation for {request.filename}: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid filename or extension: {request.filename}. Error: {str(e)}")
+    # --- End Server-Side Filename Validation ---
     
     # Get an instance of the LawFirmCrewRunner.
     runner = get_crew_runner_instance()
     # Prepare document information for the crew runner.
-    # Note: 'extracted_text' could also be passed here if available from a pre-processing step.
-    document_info = {"file_url": request.file_url, "filename": request.filename} 
+    # The crew_runner will be responsible for generating a signed URL if needed.
+    document_info = {
+        "file_path": request.file_path,
+        "bucket_name": request.bucket_name,
+        "filename": request.filename
+    }
     
     # TODO: Implement true asynchronous execution for runner.run_crew.
     # This would involve using background_tasks.add_task or a dedicated task queue (e.g., Celery).

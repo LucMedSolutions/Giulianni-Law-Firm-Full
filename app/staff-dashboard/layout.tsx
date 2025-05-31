@@ -132,10 +132,28 @@ export default function StaffDashboardLayout({ children }: { children: React.Rea
     }
 
     checkAuth()
-  }, [router])
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT" || !session) {
+        setUserData(null)
+        setUnreadNotifications(0)
+        // router.push('/'); // Middleware should handle this.
+        console.log("Staff session ended, user state cleared from layout.")
+      } else if (event === "SIGNED_IN") {
+        // checkAuth(); // Optionally re-fetch if needed on explicit sign-in event
+      }
+    })
+
+    return () => {
+      authListener?.unsubscribe()
+    }
+  }, [router, supabase]) // Added supabase to dependency array
 
   const handleSignOut = async () => {
     await supabase.auth.signOut()
+    // Explicit state reset for immediate UI feedback
+    setUserData(null)
+    setUnreadNotifications(0)
     router.push("/")
   }
 
@@ -274,7 +292,10 @@ export default function StaffDashboardLayout({ children }: { children: React.Rea
           </header>
 
           {/* Page Content */}
-          <div className="flex-1 bg-gray-50">{children}</div>
+          {/* Using userData.id as key to force re-mount of children on user change / logout, resetting page state */}
+          <div key={userData?.id || 'logged-out-staff'} className="flex-1 bg-gray-50">
+            {children}
+          </div>
 
           {/* Footer with Help Dialog */}
           <footer className="bg-white border-t p-4">

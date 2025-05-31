@@ -35,35 +35,39 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Document not found" }, { status: 404 })
     }
 
-    console.log("Document found:", { id: document.id, filename: document.filename, storage_url: document.storage_url })
+    console.log("Document found:", { id: document.id, filename: document.filename, filePath: document.storage_url, bucket: document.bucket_name })
 
-    // For now, let's try a simple redirect to the storage URL
-    // This bypasses the storage download issues
-    try {
-      const response = await fetch(document.storage_url)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
+    // Ensure RLS policies on the 'documents' table correctly restrict access.
+    // This endpoint assumes the user fetching the document record is authorized to get its path.
 
-      const blob = await response.blob()
-      const arrayBuffer = await blob.arrayBuffer()
-
-      return new NextResponse(arrayBuffer, {
-        headers: {
-          "Content-Type": document.file_type || "application/octet-stream",
-          "Content-Disposition": `attachment; filename="${document.filename}"`,
-          "Content-Length": arrayBuffer.byteLength.toString(),
-          "Cache-Control": "no-cache",
-        },
-      })
-    } catch (fetchError) {
-      console.error("Direct fetch error:", fetchError)
-
-      // Fallback: redirect to the storage URL
-      return NextResponse.redirect(document.storage_url)
+    if (!document.storage_url || !document.bucket_name) {
+      return NextResponse.json({ error: "Document path or bucket name is missing" }, { status: 500 })
     }
+
+    const filePath = document.storage_url; // storage_url now holds the file path
+    const bucketName = document.bucket_name;
+    const expiresIn = 60; // Signed URL expires in 60 seconds
+
+    const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+      .from(bucketName)
+      .createSignedUrl(filePath, expiresIn)
+
+    if (signedUrlError) {
+      console.error("Error creating signed URL:", signedUrlError)
+      return NextResponse.json({ error: "Could not create signed URL" }, { status: 500 })
+    }
+
+    if (!signedUrlData || !signedUrlData.signedUrl) {
+        console.error("No signed URL data returned from Supabase.")
+        return NextResponse.json({ error: "Failed to retrieve signed URL data" }, { status: 500})
+    }
+
+    console.log(`Generated signed URL for ${filePath}: ${signedUrlData.signedUrl}`)
+
+    return NextResponse.json({ signedUrl: signedUrlData.signedUrl })
+
   } catch (error) {
-    console.error("Download API error:", error)
+    console.error("Get Signed URL API error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

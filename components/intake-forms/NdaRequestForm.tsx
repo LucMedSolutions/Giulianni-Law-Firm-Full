@@ -1,22 +1,16 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { z, ZodError } from 'zod'; // Import Zod
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle2 } from "lucide-react";
+import { NdaRequestFormValues } from '@/types/forms'; // Import the interface
 
-export interface NdaRequestFormValues {
-  disclosing_party_name: string;
-  disclosing_party_address: string;
-  receiving_party_name: string;
-  receiving_party_address: string;
-  effective_date: string;
-  purpose_of_nda: string;
-  definition_of_confidential_information: string;
-}
+// NdaRequestFormValues is now imported from '@/types/forms'
 
 const initialNdaFormData: NdaRequestFormValues = {
   disclosing_party_name: '',
@@ -33,10 +27,35 @@ interface NdaRequestFormProps {
   onSubmitSuccess?: (formType: string) => void;
 }
 
+// Zod Schema for client-side validation for NDA Request
+const NdaRequestClientSchema = z.object({
+  disclosing_party_name: z.string().min(1, "Disclosing party name is required."),
+  disclosing_party_address: z.string().min(1, "Disclosing party address is required."),
+  receiving_party_name: z.string().min(1, "Receiving party name is required."),
+  receiving_party_address: z.string().min(1, "Receiving party address is required."),
+  effective_date: z.string().min(1, "Effective date is required.") // Basic check, could be refined for valid date format
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Effective date must be in YYYY-MM-DD format."), // Example regex for date format
+  purpose_of_nda: z.string().min(10, "Purpose must be at least 10 characters."),
+  definition_of_confidential_information: z.string().min(10, "Definition must be at least 10 characters."),
+});
+
+// Type for individual field errors
+type FormErrorsNda = {
+  [K in keyof NdaRequestFormValues]?: string[];
+};
+
 export default function NdaRequestForm({ caseId, onSubmitSuccess }: NdaRequestFormProps) {
   const [formData, setFormData] = useState<NdaRequestFormValues>(initialNdaFormData);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [submitStatus, setSubmitStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [submitStatus, setSubmitStatus] = useState<{ type: 'success' | 'error'; message: string; details?: string } | null>(null);
+  const [formErrors, setFormErrors] = useState<FormErrorsNda>({});
+
+  // Clear errors for a field when it's changed (basic implementation)
+  useEffect(() => {
+    if (Object.keys(formErrors).length > 0) {
+      // Simple clear all, could be more specific
+    }
+  }, [formData, formErrors]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -45,8 +64,27 @@ export default function NdaRequestForm({ caseId, onSubmitSuccess }: NdaRequestFo
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    setSubmitStatus(null);
+    setFormErrors({}); // Clear previous form errors
+    setSubmitStatus(null); // Clear previous submission status
+
+    // Client-side validation
+    const validationResult = NdaRequestClientSchema.safeParse(formData);
+    if (!validationResult.success) {
+      const fieldErrors: FormErrorsNda = {};
+      validationResult.error.errors.forEach(err => {
+        const path = err.path[0] as keyof NdaRequestFormValues;
+        if (!fieldErrors[path]) {
+          fieldErrors[path] = [];
+        }
+        fieldErrors[path]?.push(err.message);
+      });
+      setFormErrors(fieldErrors);
+      setSubmitStatus({ type: 'error', message: 'Please correct the errors in the form.' });
+      setIsSubmitting(false);
+      return;
+    }
+    
+    setIsSubmitting(true); // Set submitting state only after validation passes
 
     if (!caseId) {
         setSubmitStatus({type: 'error', message: 'Error: Case ID is missing. Cannot submit form.'});
@@ -55,7 +93,7 @@ export default function NdaRequestForm({ caseId, onSubmitSuccess }: NdaRequestFo
     }
 
     const payload = {
-      case_id: caseId,
+      case_id: caseId, // Already validated by parent component
       form_type: 'nda_request' as const,
       formData: formData,
     };
@@ -77,17 +115,37 @@ export default function NdaRequestForm({ caseId, onSubmitSuccess }: NdaRequestFo
         }
       } else {
         if (responseData.details && typeof responseData.details === 'object' && !Array.isArray(responseData.details)) {
-            const errorMessages = Object.entries(responseData.details)
-                .map(([field, errors]: [string, any]) => `${field}: ${(errors as string[]).join(', ')}`)
-                .join('; ');
-            setSubmitStatus({ type: 'error', message: `Validation failed: ${errorMessages}` });
+            // Server-side Zod errors
+            const serverFieldErrors: FormErrorsNda = {};
+            let generalErrorMessage = 'Submission failed due to validation errors: ';
+            const errorDetails: string[] = [];
+
+            Object.entries(responseData.details).forEach(([field, errors]) => {
+                const key = field as keyof NdaRequestFormValues;
+                serverFieldErrors[key] = (errors as string[]);
+                errorDetails.push(`${field}: ${(errors as string[]).join(', ')}`);
+            });
+            setFormErrors(prevErrors => ({...prevErrors, ...serverFieldErrors}));
+            setSubmitStatus({ type: 'error', message: generalErrorMessage + errorDetails.join('; ') });
         } else {
+            // Other server errors
             setSubmitStatus({ type: 'error', message: responseData.error || responseData.details || 'Failed to submit NDA Request form.' });
         }
       }
     } catch (error: any) {
       console.error("Error submitting NDA Request form:", error);
-      setSubmitStatus({ type: 'error', message: `An unexpected error occurred: ${error.message}` });
+      if (error instanceof ZodError) { // Should ideally be caught by safeParse
+        const fieldErrors: FormErrorsNda = {};
+        error.errors.forEach(err => {
+            const path = err.path[0] as keyof NdaRequestFormValues;
+            if (!fieldErrors[path]) { fieldErrors[path] = []; }
+            fieldErrors[path]?.push(err.message);
+        });
+        setFormErrors(fieldErrors);
+        setSubmitStatus({ type: 'error', message: 'Please correct the highlighted errors.' });
+      } else {
+        setSubmitStatus({ type: 'error', message: `An unexpected error occurred: ${error.message}` });
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -100,11 +158,13 @@ export default function NdaRequestForm({ caseId, onSubmitSuccess }: NdaRequestFo
         <legend className="text-lg font-medium px-1">Disclosing Party</legend>
         <div className="space-y-2">
           <Label htmlFor="disclosing_party_name">Name</Label>
-          <Input id="disclosing_party_name" name="disclosing_party_name" value={formData.disclosing_party_name} onChange={handleChange} required disabled={isSubmitting} placeholder="e.g., Your Company Name / Your Full Name" />
+          <Input id="disclosing_party_name" name="disclosing_party_name" value={formData.disclosing_party_name} onChange={handleChange} disabled={isSubmitting} placeholder="e.g., Your Company Name / Your Full Name" aria-describedby="disclosing_party_name_error" />
+          {formErrors.disclosing_party_name && <p id="disclosing_party_name_error" className="text-sm text-red-600 mt-1">{formErrors.disclosing_party_name.join(', ')}</p>}
         </div>
         <div className="space-y-2">
           <Label htmlFor="disclosing_party_address">Address</Label>
-          <Input id="disclosing_party_address" name="disclosing_party_address" value={formData.disclosing_party_address} onChange={handleChange} required disabled={isSubmitting} placeholder="e.g., 123 Main St, Anytown, USA" />
+          <Input id="disclosing_party_address" name="disclosing_party_address" value={formData.disclosing_party_address} onChange={handleChange} disabled={isSubmitting} placeholder="e.g., 123 Main St, Anytown, USA" aria-describedby="disclosing_party_address_error" />
+          {formErrors.disclosing_party_address && <p id="disclosing_party_address_error" className="text-sm text-red-600 mt-1">{formErrors.disclosing_party_address.join(', ')}</p>}
         </div>
       </fieldset>
 
@@ -113,11 +173,13 @@ export default function NdaRequestForm({ caseId, onSubmitSuccess }: NdaRequestFo
         <legend className="text-lg font-medium px-1">Receiving Party</legend>
         <div className="space-y-2">
           <Label htmlFor="receiving_party_name">Name</Label>
-          <Input id="receiving_party_name" name="receiving_party_name" value={formData.receiving_party_name} onChange={handleChange} required disabled={isSubmitting} placeholder="e.g., Other Party's Company Name / Full Name" />
+          <Input id="receiving_party_name" name="receiving_party_name" value={formData.receiving_party_name} onChange={handleChange} disabled={isSubmitting} placeholder="e.g., Other Party's Company Name / Full Name" aria-describedby="receiving_party_name_error" />
+          {formErrors.receiving_party_name && <p id="receiving_party_name_error" className="text-sm text-red-600 mt-1">{formErrors.receiving_party_name.join(', ')}</p>}
         </div>
         <div className="space-y-2">
           <Label htmlFor="receiving_party_address">Address</Label>
-          <Input id="receiving_party_address" name="receiving_party_address" value={formData.receiving_party_address} onChange={handleChange} required disabled={isSubmitting} placeholder="e.g., 456 Oak Ave, Otherville, USA" />
+          <Input id="receiving_party_address" name="receiving_party_address" value={formData.receiving_party_address} onChange={handleChange} disabled={isSubmitting} placeholder="e.g., 456 Oak Ave, Otherville, USA" aria-describedby="receiving_party_address_error" />
+          {formErrors.receiving_party_address && <p id="receiving_party_address_error" className="text-sm text-red-600 mt-1">{formErrors.receiving_party_address.join(', ')}</p>}
         </div>
       </fieldset>
 
@@ -126,15 +188,18 @@ export default function NdaRequestForm({ caseId, onSubmitSuccess }: NdaRequestFo
         <legend className="text-lg font-medium px-1">Agreement Details</legend>
         <div className="space-y-2">
           <Label htmlFor="effective_date">Effective Date</Label>
-          <Input id="effective_date" name="effective_date" type="date" value={formData.effective_date} onChange={handleChange} required disabled={isSubmitting} />
+          <Input id="effective_date" name="effective_date" type="date" value={formData.effective_date} onChange={handleChange} disabled={isSubmitting} aria-describedby="effective_date_error" />
+          {formErrors.effective_date && <p id="effective_date_error" className="text-sm text-red-600 mt-1">{formErrors.effective_date.join(', ')}</p>}
         </div>
         <div className="space-y-2">
           <Label htmlFor="purpose_of_nda">Purpose of NDA</Label>
-          <Textarea id="purpose_of_nda" name="purpose_of_nda" value={formData.purpose_of_nda} onChange={handleChange} required disabled={isSubmitting} placeholder="e.g., To discuss potential business collaboration, evaluate software..." />
+          <Textarea id="purpose_of_nda" name="purpose_of_nda" value={formData.purpose_of_nda} onChange={handleChange} disabled={isSubmitting} placeholder="e.g., To discuss potential business collaboration, evaluate software..." aria-describedby="purpose_of_nda_error" />
+          {formErrors.purpose_of_nda && <p id="purpose_of_nda_error" className="text-sm text-red-600 mt-1">{formErrors.purpose_of_nda.join(', ')}</p>}
         </div>
         <div className="space-y-2">
           <Label htmlFor="definition_of_confidential_information">Definition of Confidential Information</Label>
-          <Textarea id="definition_of_confidential_information" name="definition_of_confidential_information" value={formData.definition_of_confidential_information} onChange={handleChange} required disabled={isSubmitting} placeholder="e.g., Any and all technical, business, financial information..." />
+          <Textarea id="definition_of_confidential_information" name="definition_of_confidential_information" value={formData.definition_of_confidential_information} onChange={handleChange} disabled={isSubmitting} placeholder="e.g., Any and all technical, business, financial information..." aria-describedby="definition_of_confidential_information_error" />
+          {formErrors.definition_of_confidential_information && <p id="definition_of_confidential_information_error" className="text-sm text-red-600 mt-1">{formErrors.definition_of_confidential_information.join(', ')}</p>}
         </div>
       </fieldset>
       

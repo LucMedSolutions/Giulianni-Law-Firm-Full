@@ -13,20 +13,16 @@ import { Label } from "@/components/ui/label";
 import NdaRequestForm from '@/components/intake-forms/NdaRequestForm';
 import GeneralConsultationForm from '@/components/intake-forms/GeneralConsultationForm';
 
+import { Case, PageMessage } from '@/types'; // Import Case and PageMessage
+
 type FormType = 'nda_request' | 'general_consultation';
 
-interface Case { 
-  id: string;
-  case_number?: string;
-  client_name?: string;
-  status?: string;
-  case_type?: string;
-}
+// Case interface is now imported from '@/types'
 
 export default function SubmitIntakePage() {
   const [selectedFormType, setSelectedFormType] = useState<FormType | null>(null);
   const [currentCaseId, setCurrentCaseId] = useState<string | null>(null); 
-  const [pageMessage, setPageMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [pageMessage, setPageMessage] = useState<PageMessage | null>(null); // Use PageMessage interface
   
   const [clientCasesList, setClientCasesList] = useState<Case[]>([]);
   const [loadingClientCases, setLoadingClientCases] = useState<boolean>(true);
@@ -39,9 +35,10 @@ export default function SubmitIntakePage() {
         const response = await fetch('/api/get-client-cases');
         if (!response.ok) {
           const errorData = await response.json();
-          throw new Error(errorData.details || errorData.error || `Failed to fetch your cases (${response.status})`);
+          const errorMessage = errorData.details || errorData.error || `Failed to fetch your cases (${response.status})`;
+          throw new Error(errorMessage);
         }
-        const data = await response.json();
+        const data: Case[] = await response.json(); // Add type annotation for data
         setClientCasesList(data || []);
         if (!data || data.length === 0) {
           setPageMessage({
@@ -51,7 +48,7 @@ export default function SubmitIntakePage() {
         }
       } catch (err: any) {
         console.error("Error fetching client cases:", err);
-        setPageMessage({ type: 'error', text: err.message || "An unexpected error occurred while fetching your cases."});
+        setPageMessage({ type: 'error', text: err.message || "An unexpected error occurred while fetching your cases.", details: err.cause?.message });
         setClientCasesList([]);
       } finally {
         setLoadingClientCases(false);
@@ -62,7 +59,7 @@ export default function SubmitIntakePage() {
 
   const handleFormSubmitSuccess = (formTypeName: string) => {
     setPageMessage({ type: 'success', text: `${formTypeName} submitted successfully for Case ID: ${currentCaseId}!` });
-    setSelectedFormType(null); 
+    setSelectedFormType(null);
     // Optionally, you might want to clear currentCaseId or re-fetch cases if a submission changes case status etc.
     // For now, keeping the case selected.
   };

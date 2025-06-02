@@ -1,6 +1,16 @@
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
+
+// Helper function to add timeout to promises
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutError = new Error('Operation timed out')): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(timeoutError), ms))
+  ]);
+}
+
+const SUPABASE_TIMEOUT_MS = 10000; // 10 seconds, adjust as needed
 import { z } from 'zod';
 
 export const dynamic = 'force-dynamic';
@@ -112,10 +122,15 @@ export async function POST(request: Request) {
 
   try {
     // 1. Authentication
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { session }, error: sessionError } = await withTimeout(
+      supabase.auth.getSession(),
+      SUPABASE_TIMEOUT_MS,
+      new Error('Timeout getting session')
+    );
     if (sessionError) {
       console.error('Error getting session:', sessionError.message);
-      return NextResponse.json({ error: 'Failed to get session', details: sessionError.message }, { status: 500 });
+      const status = sessionError.message === 'Timeout getting session' ? 504 : 500;
+      return NextResponse.json({ error: 'Failed to get session', details: sessionError.message }, { status });
     }
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized: No active session.' }, { status: 401 });
@@ -125,7 +140,7 @@ export async function POST(request: Request) {
     // 2. Request Body Parsing & Validation
     let body;
     try {
-      body = await request.json();
+      body = await request.json(); // This is a network request, but typically very fast. Timeout might be overkill unless large bodies are expected.
     } catch (e: any) {
       return NextResponse.json({ error: 'Invalid JSON body', details: e.message }, { status: 400 });
     }
@@ -139,58 +154,75 @@ export async function POST(request: Request) {
     const { case_id, form_type, formData } = validationResult.data;
 
     // 3. Store Data in Supabase (Upsert-like logic: select then insert/update)
-    // This logic assumes one intake form of a specific type per case.
-    // If multiple forms of the same type are allowed per case, this needs adjustment (e.g. remove form_type from eq).
-    const { data: existingIntake, error: fetchError } = await supabase
-      .from('client_intake_data')
-      .select('id')
-      .eq('case_id', case_id)
-      .eq('form_type', form_type) // Only update if same case AND same form type
-      .eq('client_user_id', clientUserId) // Ensure user can only update their own existing forms
-      .maybeSingle();
+    const { data: existingIntake, error: fetchError } = await withTimeout(
+      supabase
+        .from('client_intake_data')
+        .select('id')
+        .eq('case_id', case_id)
+        .eq('form_type', form_type)
+        .eq('client_user_id', clientUserId)
+        .maybeSingle(),
+      SUPABASE_TIMEOUT_MS,
+      new Error('Timeout checking for existing client intake data')
+    );
 
     if (fetchError) {
       console.error('Error checking for existing client intake data:', fetchError.message);
-      return NextResponse.json({ error: 'Database error while checking existing data.', details: fetchError.message }, { status: 500 });
+      const status = fetchError.message === 'Timeout checking for existing client intake data' ? 504 : 500;
+      return NextResponse.json({ error: 'Database error while checking existing data.', details: fetchError.message }, { status });
     }
 
-    let upsertError = null;
+    let upsertResponse = null;
     let statusToReturn = 200; // Default to 200 OK (for update)
 
     if (existingIntake?.id) {
       // Update existing record
-      const { error } = await supabase
-        .from('client_intake_data')
-        .update({ data: formData, updated_at: new Date().toISOString() }) // client_user_id and form_type shouldn't change for an existing record by the same user
-        .eq('id', existingIntake.id);
-      upsertError = error;
+      upsertResponse = await withTimeout(
+        supabase
+          .from('client_intake_data')
+          .update({ data: formData, updated_at: new Date().toISOString() })
+          .eq('id', existingIntake.id)
+          .select('id') // Optionally select to confirm update, though not strictly needed here
+          .single(), // Ensure we get a response or error for the single record
+        SUPABASE_TIMEOUT_MS,
+        new Error('Timeout updating client intake data')
+      );
     } else {
       // Insert new record
-      const { error } = await supabase
-        .from('client_intake_data')
-        .insert({
-          case_id: case_id,
-          client_user_id: clientUserId,
-          form_type: form_type,
-          data: formData,
-        });
-      upsertError = error;
-      if (!upsertError) {
+      upsertResponse = await withTimeout(
+        supabase
+          .from('client_intake_data')
+          .insert({
+            case_id: case_id,
+            client_user_id: clientUserId,
+            form_type: form_type,
+            data: formData,
+          })
+          .select('id') // Select to confirm insert
+          .single(), // Ensure we get a response or error for the single record
+        SUPABASE_TIMEOUT_MS,
+        new Error('Timeout inserting client intake data')
+      );
+      if (!upsertResponse.error) {
         statusToReturn = 201; // 201 Created for new record
       }
     }
 
-    if (upsertError) {
-      console.error('Error upserting client intake data:', upsertError.message);
-      return NextResponse.json({ error: 'Failed to save intake data to database.', details: upsertError.message }, { status: 500 });
+    if (upsertResponse.error) {
+      console.error('Error upserting client intake data:', upsertResponse.error.message);
+      const status = upsertResponse.error.message.startsWith('Timeout') ? 504 : 500;
+      return NextResponse.json({ error: 'Failed to save intake data to database.', details: upsertResponse.error.message }, { status });
     }
 
     // 4. Return Success Response
-    return NextResponse.json({ message: 'Intake data submitted successfully.' }, { status: statusToReturn });
+    return NextResponse.json({ message: 'Intake data submitted successfully.', data: upsertResponse.data }, { status: statusToReturn });
 
   } catch (error: any) {
-    // Catch any other unexpected errors
-    console.error('Unexpected error in /api/submit-client-intake:', error.message);
+    // Catch any other unexpected errors, including timeouts not caught by specific handlers
+    console.error('Unexpected error in /api/submit-client-intake:', error.message, error);
+    if (error.message && error.message.toLowerCase().includes('timeout')) {
+      return NextResponse.json({ error: 'An operation timed out.', details: error.message }, { status: 504 });
+    }
     return NextResponse.json({ error: 'An unexpected server error occurred.', details: error.message }, { status: 500 });
   }
 }

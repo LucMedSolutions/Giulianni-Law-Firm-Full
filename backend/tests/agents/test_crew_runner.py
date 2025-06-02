@@ -181,6 +181,28 @@ def test_fetch_network_error_on_signed_url(mock_requests_get, mock_create_admin_
     result = fetch_and_extract_text_from_url("path/to/doc.pdf", "docs", "doc.pdf")
     assert "Error fetching file from generated signed URL 'mock_signed_url_value': Signed URL timeout" in result
 
+@patch('backend.agents.crew_runner.os.getenv')
+@patch('backend.agents.crew_runner.create_supabase_client')
+@patch('backend.agents.crew_runner.requests.get')
+@patch('backend.agents.crew_runner.pypdf.PdfReader')
+def test_fetch_pdf_parsing_error(mock_pdf_reader_class, mock_requests_get, mock_create_admin_client, mock_os_getenv):
+    mock_os_getenv.side_effect = lambda key: {'SUPABASE_URL': 'http://m', 'SUPABASE_SERVICE_KEY': 'k'}.get(key)
+    mock_admin_client = get_mock_supabase_admin_client()
+    mock_create_admin_client.return_value = mock_admin_client
+
+    mock_response = MockRequestsResponse(b"dummy pdf data")
+    mock_requests_get.return_value = mock_response
+    
+    # Simulate pypdf.PdfReader raising PdfReadError
+    mock_pdf_reader_class.side_effect = pypdf.errors.PdfReadError("Simulated PDF parsing error")
+    
+    result = fetch_and_extract_text_from_url("path/to/corrupted.pdf", "docs", "corrupted.pdf")
+    
+    assert "Error parsing PDF 'corrupted.pdf'" in result
+    assert "Simulated PDF parsing error" in result
+    mock_requests_get.assert_called_once_with('mock_signed_url_value', stream=True, timeout=30)
+    mock_pdf_reader_class.assert_called_once()
+
 
 # --- Tests for LawFirmCrewRunner.run_crew method ---
 # These will be more involved and require mocking ChatOpenAI, Crew, Task, Agent, and update_task_status
@@ -352,3 +374,264 @@ def test_run_crew_kickoff_exception(mock_crew_class, mock_chat_openai_class, moc
 import requests # For requests.exceptions.RequestException
 import pypdf # For pypdf.errors.PdfReadError
 import backend.agents.crew_runner # For patching update_task_status correctly
+import json # For MOCK_CLIENT_DATA
+import uuid # For test IDs
+import datetime # For date manipulations if needed, and for checking date fields
+from unittest.mock import call # For checking multiple calls to a mock
+
+
+# --- Test Suite for run_document_drafting_crew ---
+
+# Constants for testing
+DRAFT_TEST_TASK_ID = str(uuid.uuid4())
+DRAFT_TEST_CASE_ID = str(uuid.uuid4())
+DRAFT_TEST_USER_ID = str(uuid.uuid4())
+DRAFT_TEST_TEMPLATE_ID = "test_template.jinja2"
+DRAFT_MOCK_TEMPLATE_CONTENT = "Hello {{ client_data.name }}, this is a test for {{ case_id }} on {{ generation_date }}."
+DRAFT_MOCK_CLIENT_DATA = {"name": "Test Client", "project_name": "Alpha"}
+DRAFT_MOCK_OPERATOR_INSTRUCTIONS = "Be formal."
+# Approximate expected generated document text (date part will vary)
+DRAFT_MOCK_GENERATED_DOCUMENT_TEXT = f"Hello Test Client, this is a test for {DRAFT_TEST_CASE_ID} on some_date."
+
+
+@pytest.fixture
+def mock_crew_runner_environment_for_drafting(monkeypatch):
+    """Mocks environment variables for LawFirmCrewRunner initialization specifically for drafting tests."""
+    monkeypatch.setenv("OPENAI_API_KEY", "fake_openai_key_for_drafting")
+    monkeypatch.setenv("SUPABASE_URL", "http://fake.supabase.url/drafting")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "fake_supabase_key_for_drafting")
+
+@pytest.fixture
+def drafting_runner(mock_crew_runner_environment_for_drafting):
+    """Provides an instance of LawFirmCrewRunner with mocked LLM and Supabase client for drafting tests."""
+    # Patch ChatOpenAI used in LawFirmCrewRunner.__init__
+    with patch('backend.agents.crew_runner.ChatOpenAI', MagicMock()) as mock_llm_class, \
+         patch('backend.agents.crew_runner.create_supabase_client') as mock_create_supabase_client:
+        
+        mock_supabase_instance = MagicMock(spec=SupabaseClient) # Use spec for better mocking
+        mock_create_supabase_client.return_value = mock_supabase_instance # Mocks client used by tool
+        
+        runner_instance = LawFirmCrewRunner()
+        # Explicitly set the runner's supabase_client to our specific mock for assertions,
+        # this overrides the one potentially created in __init__ if that logic changes.
+        runner_instance.supabase_client = mock_supabase_instance
+        
+        # Ensure the LLM instance on the runner is also the class's return_value mock,
+        # especially if OPENAI_API_KEY was actually missing and it defaulted to None.
+        runner_instance.llm = mock_llm_class.return_value 
+        return runner_instance
+
+
+@patch('backend.agents.crew_runner.update_task_status') # Path to update_task_status as used in crew_runner.py
+@patch('backend.agents.crew_runner.Crew')      # Path to Crew as used in crew_runner.py
+def test_run_document_drafting_crew_success(
+    MockCrew, mock_update_task_status_func, drafting_runner: LawFirmCrewRunner
+):
+    # --- Arrange ---
+    # Mock _load_template
+    drafting_runner._load_template = MagicMock(return_value=DRAFT_MOCK_TEMPLATE_CONTENT)
+
+    # Mock Crew kickoff result for document drafting
+    mock_drafting_crew_instance = MockCrew.return_value
+    mock_kickoff_result = MagicMock() # This object will be what kickoff returns
+    # The actual generated text is often in raw_output of the task's output, or directly if crew result is simple string
+    mock_kickoff_result.raw_output = DRAFT_MOCK_GENERATED_DOCUMENT_TEXT # Simulate TaskOutput like structure
+    mock_drafting_crew_instance.kickoff.return_value = mock_kickoff_result
+
+
+    # Mock Supabase storage upload
+    # drafting_runner.supabase_client is already a MagicMock from the fixture
+    mock_storage_from = drafting_runner.supabase_client.storage.from_
+    mock_upload = mock_storage_from.return_value.upload
+    # Supabase Python client v2 upload returns a dict like {'id': '...', 'path': '...', ...} on success
+    mock_upload.return_value = {"id": str(uuid.uuid4()), "path": f"{DRAFT_TEST_CASE_ID}/generated_file.txt"} 
+
+    # Mock Supabase database insert
+    mock_db_table = drafting_runner.supabase_client.table
+    mock_insert = mock_db_table.return_value.insert
+    mock_db_insert_response = MagicMock()
+    mock_db_insert_response.data = [{"id": str(uuid.uuid4()), "storage_path": "some/path.txt"}] # Simulate successful insert
+    mock_insert.return_value.execute.return_value = mock_db_insert_response
+    
+    # --- Act ---
+    result = drafting_runner.run_document_drafting_crew(
+        task_id_from_endpoint=DRAFT_TEST_TASK_ID,
+        case_id=DRAFT_TEST_CASE_ID,
+        client_data_json=DRAFT_MOCK_CLIENT_DATA,
+        operator_instructions=DRAFT_MOCK_OPERATOR_INSTRUCTIONS,
+        template_id=DRAFT_TEST_TEMPLATE_ID,
+        user_id=DRAFT_TEST_USER_ID
+    )
+
+    # --- Assert ---
+    assert result["status"] == "success"
+    assert result["task_id"] == DRAFT_TEST_TASK_ID
+    assert "document_id" in result
+    assert "storage_path" in result
+
+    # Assertions for update_task_status calls
+    expected_status_calls = [
+        call(task_id=DRAFT_TEST_TASK_ID, current_status='in_progress', details=f'Document drafting started for template: {DRAFT_TEST_TEMPLATE_ID}, Case ID: {DRAFT_TEST_CASE_ID}.', crew_type='document_drafter', user_id=DRAFT_TEST_USER_ID),
+        call(task_id=DRAFT_TEST_TASK_ID, current_status='completed', details=pytest.ANY, result_data=pytest.ANY) 
+    ]
+    mock_update_task_status_func.assert_has_calls(expected_status_calls, any_order=False)
+    # More specific check for the 'completed' call's details and result_data
+    args_completed, kwargs_completed = mock_update_task_status_func.call_args_list[1]
+    expected_filename_part = f"{DRAFT_TEST_TEMPLATE_ID.replace('.jinja2', '')}_{DRAFT_TEST_CASE_ID.replace('-', '')}_{DRAFT_TEST_TASK_ID.replace('-', '')}.txt"
+    assert f'Document "{expected_filename_part}" generated and saved successfully.' == kwargs_completed['details']
+    assert kwargs_completed['result_data']['filename'] == expected_filename_part
+
+
+    drafting_runner._load_template.assert_called_once_with(DRAFT_TEST_TEMPLATE_ID)
+    MockCrew.assert_called_once() 
+    mock_drafting_crew_instance.kickoff.assert_called_once()
+    
+    expected_filename = f"{DRAFT_TEST_TEMPLATE_ID.replace('.jinja2', '')}_{DRAFT_TEST_CASE_ID.replace('-', '')}_{DRAFT_TEST_TASK_ID.replace('-', '')}.txt"
+    expected_storage_path = f"{DRAFT_TEST_CASE_ID}/{expected_filename}"
+    mock_upload.assert_called_once()
+    args_upload, kwargs_upload = mock_upload.call_args
+    assert kwargs_upload['path'] == expected_storage_path
+    assert isinstance(kwargs_upload['file'], bytes) 
+
+    mock_insert.assert_called_once()
+    inserted_data = mock_insert.call_args[0][0]
+    assert inserted_data["case_id"] == DRAFT_TEST_CASE_ID
+    assert inserted_data["file_name"] == expected_filename
+    assert inserted_data["storage_path"] == expected_storage_path
+    assert inserted_data["bucket_name"] == "generated_documents"
+    assert inserted_data["uploaded_by_user_id"] == DRAFT_TEST_USER_ID
+    assert inserted_data["ai_processing_task_id"] == DRAFT_TEST_TASK_ID
+
+
+@patch('backend.agents.crew_runner.update_task_status')
+def test_run_document_drafting_crew_template_load_failure(mock_update_task_status_func, drafting_runner: LawFirmCrewRunner):
+    drafting_runner._load_template = MagicMock(return_value=None) 
+
+    result = drafting_runner.run_document_drafting_crew(
+        DRAFT_TEST_TASK_ID, DRAFT_TEST_CASE_ID, {}, "", "non_existent.jinja2", DRAFT_TEST_USER_ID
+    )
+
+    assert result["status"] == "error"
+    assert "Failed to load template" in result["message"]
+    mock_update_task_status_func.assert_any_call(
+        task_id=DRAFT_TEST_TASK_ID, 
+        current_status='error', 
+        details='Failed to load template: non_existent.jinja2',
+        result_data=pytest.ANY
+    )
+
+@patch('backend.agents.crew_runner.update_task_status')
+@patch('backend.agents.crew_runner.Crew')
+def test_run_document_drafting_crew_llm_failure(MockCrew, mock_update_task_status_func, drafting_runner: LawFirmCrewRunner):
+    drafting_runner._load_template = MagicMock(return_value=DRAFT_MOCK_TEMPLATE_CONTENT)
+    mock_drafting_crew_instance = MockCrew.return_value
+    mock_drafting_crew_instance.kickoff.side_effect = Exception("LLM API Error")
+
+    result = drafting_runner.run_document_drafting_crew(
+        DRAFT_TEST_TASK_ID, DRAFT_TEST_CASE_ID, {}, "", DRAFT_TEST_TEMPLATE_ID, DRAFT_TEST_USER_ID
+    )
+
+    assert result["status"] == "error"
+    assert "LLM execution error: LLM API Error" in result["message"]
+    mock_update_task_status_func.assert_any_call(
+        task_id=DRAFT_TEST_TASK_ID, 
+        current_status='error', 
+        details="LLM failed to generate document: LLM API Error",
+        result_data=pytest.ANY
+    )
+
+@patch('backend.agents.crew_runner.update_task_status')
+@patch('backend.agents.crew_runner.Crew')
+def test_run_document_drafting_crew_llm_empty_output(MockCrew, mock_update_task_status_func, drafting_runner: LawFirmCrewRunner):
+    # --- Arrange ---
+    drafting_runner._load_template = MagicMock(return_value=DRAFT_MOCK_TEMPLATE_CONTENT)
+    
+    mock_drafting_crew_instance = MockCrew.return_value
+    mock_kickoff_result = MagicMock()
+    mock_kickoff_result.raw_output = "" # Simulate empty string output from LLM
+    mock_drafting_crew_instance.kickoff.return_value = mock_kickoff_result
+
+    # --- Act ---
+    result = drafting_runner.run_document_drafting_crew(
+        task_id_from_endpoint=DRAFT_TEST_TASK_ID,
+        case_id=DRAFT_TEST_CASE_ID,
+        client_data_json=DRAFT_MOCK_CLIENT_DATA,
+        operator_instructions=DRAFT_MOCK_OPERATOR_INSTRUCTIONS,
+        template_id=DRAFT_TEST_TEMPLATE_ID,
+        user_id=DRAFT_TEST_USER_ID
+    )
+
+    # --- Assert ---
+    assert result["status"] == "error"
+    assert "LLM did not produce a document string." in result["message"]
+    # Check that update_task_status was called with 'error'
+    # The last call to update_task_status should be the error one.
+    error_call_args, error_call_kwargs = mock_update_task_status_func.call_args_list[-1]
+    assert error_call_kwargs['current_status'] == 'error'
+    assert "LLM failed to generate document: LLM did not produce a document string." in error_call_kwargs['details']
+
+
+@patch('backend.agents.crew_runner.update_task_status')
+@patch('backend.agents.crew_runner.Crew') 
+def test_run_document_drafting_crew_storage_upload_failure(MockCrew, mock_update_task_status_func, drafting_runner: LawFirmCrewRunner):
+    drafting_runner._load_template = MagicMock(return_value=DRAFT_MOCK_TEMPLATE_CONTENT)
+    
+    mock_drafting_crew_instance = MockCrew.return_value
+    mock_kickoff_result = MagicMock()
+    mock_kickoff_result.raw_output = DRAFT_MOCK_GENERATED_DOCUMENT_TEXT
+    mock_drafting_crew_instance.kickoff.return_value = mock_kickoff_result
+
+    mock_storage_from = drafting_runner.supabase_client.storage.from_
+    mock_upload = mock_storage_from.return_value.upload
+    mock_upload.side_effect = Exception("Supabase Storage Error")
+
+    result = drafting_runner.run_document_drafting_crew(
+        DRAFT_TEST_TASK_ID, DRAFT_TEST_CASE_ID, {}, "", DRAFT_TEST_TEMPLATE_ID, DRAFT_TEST_USER_ID
+    )
+
+    assert result["status"] == "error"
+    assert "Storage upload error: Supabase Storage Error" in result["message"]
+    mock_update_task_status_func.assert_any_call(
+        task_id=DRAFT_TEST_TASK_ID, 
+        current_status='error', 
+        details="Failed to upload document to storage: Supabase Storage Error",
+        result_data=pytest.ANY
+    )
+
+
+@patch('backend.agents.crew_runner.update_task_status')
+@patch('backend.agents.crew_runner.Crew')
+def test_run_document_drafting_crew_db_insert_failure(MockCrew, mock_update_task_status_func, drafting_runner: LawFirmCrewRunner):
+    drafting_runner._load_template = MagicMock(return_value=DRAFT_MOCK_TEMPLATE_CONTENT)
+
+    mock_drafting_crew_instance = MockCrew.return_value
+    mock_kickoff_result = MagicMock()
+    mock_kickoff_result.raw_output = DRAFT_MOCK_GENERATED_DOCUMENT_TEXT
+    mock_drafting_crew_instance.kickoff.return_value = mock_kickoff_result
+    
+    mock_storage_from = drafting_runner.supabase_client.storage.from_
+    mock_upload = mock_storage_from.return_value.upload
+    mock_upload.return_value = {"id": str(uuid.uuid4()), "path": "some/path.txt"}
+
+    mock_db_table = drafting_runner.supabase_client.table
+    mock_insert_execute = mock_db_table.return_value.insert.return_value.execute
+    mock_insert_execute.side_effect = Exception("Supabase DB Error")
+
+    mock_remove = mock_storage_from.return_value.remove # For cleanup check
+    mock_remove.return_value = MagicMock() 
+
+    result = drafting_runner.run_document_drafting_crew(
+        DRAFT_TEST_TASK_ID, DRAFT_TEST_CASE_ID, {}, "", DRAFT_TEST_TEMPLATE_ID, DRAFT_TEST_USER_ID
+    )
+
+    assert result["status"] == "error"
+    assert "Database insert error: Supabase DB Error" in result["message"]
+    mock_update_task_status_func.assert_any_call(
+        task_id=DRAFT_TEST_TASK_ID, 
+        current_status='error', 
+        details="Failed to save document record to database: Supabase DB Error",
+        result_data=pytest.ANY
+    )
+    expected_filename = f"{DRAFT_TEST_TEMPLATE_ID.replace('.jinja2', '')}_{DRAFT_TEST_CASE_ID.replace('-', '')}_{DRAFT_TEST_TASK_ID.replace('-', '')}.txt"
+    expected_storage_path = f"{DRAFT_TEST_CASE_ID}/{expected_filename}"
+    mock_remove.assert_called_once_with([expected_storage_path])

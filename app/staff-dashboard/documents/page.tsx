@@ -302,21 +302,22 @@ export default function DocumentsPage() {
                       if (uploadResult.aiTaskId && !uploadResult.aiError) {
                         toast({
                           title: "Upload Successful",
-                          description: `Document "${uploadResult.dbDocument.file_name}" uploaded. AI processing started (Task ID: ${uploadResult.aiTaskId}).`,
-                          variant: "success",
+                          description: `Document "${uploadResult.dbDocument.file_name}" uploaded. AI processing has been initiated (Task ID: ${uploadResult.aiTaskId}).`,
+                          // Default variant is suitable for success
                         });
                       } else if (uploadResult.aiError) {
                         toast({
-                          title: "Upload Complete, AI Issue",
-                          description: `Document "${uploadResult.dbDocument.file_name}" uploaded, but AI processing call failed: ${uploadResult.aiError}. You may be able to retry from the upload modal.`,
-                          variant: "warning",
-                          duration: 10000,
+                          title: "Upload Complete - AI Processing Issue",
+                          description: `Document "${uploadResult.dbDocument.file_name}" uploaded, but initiating AI processing failed: ${uploadResult.aiError}. You can retry AI processing from the document upload area if available.`,
+                          // Default variant can be used; title and description convey the warning.
+                          // For a more distinct visual, a custom toast type or specific styling might be needed if shadcn's default toast variants are limited.
+                          duration: 10000, // Keep longer duration for important info
                         });
                       } else {
                          toast({
                           title: "Upload Successful",
-                          description: `Document "${uploadResult.dbDocument.file_name}" has been uploaded. AI processing status unknown.`,
-                          variant: "success",
+                          description: `Document "${uploadResult.dbDocument.file_name}" has been uploaded. Status of AI processing initiation is unknown.`,
+                          // Default variant
                         });
                       }
                     }

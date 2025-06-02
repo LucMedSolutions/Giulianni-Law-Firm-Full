@@ -52,23 +52,28 @@ This repository contains the integrated frontend and backend for the Giulianni L
 
 ## Environment Variables
 
-Proper configuration of environment variables is crucial for the application to run correctly. Example files are provided, which you should copy and fill with your actual credentials.
+Proper configuration of environment variables is crucial for the application to run correctly. Example files (`.env.local.example` for Next.js frontend at the project root, and `backend/.env.example` for FastAPI backend) are provided. You should copy these to `.env.local` (for frontend) and `.env` (for backend) respectively, and fill in your actual credentials.
 
-### Frontend (`frontend/.env.local`)
+### Frontend (Next.js - `.env.local` at project root)
 
-1.  Navigate to the `frontend/` directory.
-2.  Copy `frontend/.env.local.example` to a new file named `frontend/.env.local`.
+1.  At the project root, copy `.env.local.example` to a new file named `.env.local`.
     ```bash
-    cp frontend/.env.local.example frontend/.env.local
+    cp .env.local.example .env.local
     ```
-3.  Edit `frontend/.env.local` and fill in the following variables:
-    -   `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase project URL.
-    -   `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Your Supabase project anon key.
-    -   `NEXT_PUBLIC_BACKEND_API_URL`: The complete base URL for your Python backend API. For local development, this is typically `http://localhost:8000`. This variable is used by the frontend to make calls to services like task status polling.
+2.  Edit `.env.local` and fill in the following variables:
+    *   `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase project URL. (e.g., `https://your-project-ref.supabase.co`)
+    *   `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Your Supabase project anonymous public key.
+    *   `NEXT_PUBLIC_BACKEND_API_URL`: The full base URL for your FastAPI backend API.
+        *   For local development, this is typically `http://localhost:8000`.
+        *   For production, this will be your deployed backend URL.
 
-    These are public keys and are safe to be exposed to the browser. You can find these in your Supabase project settings under Project Settings > API.
+    These `NEXT_PUBLIC_` variables are exposed to the browser. You can find your Supabase URL and anon key in your Supabase project settings (Project Settings > API).
 
-### Backend (`backend/.env`)
+    **Server-Side Next.js Variables (for API Routes):**
+    Some Next.js API routes (e.g., `/api/get-signed-document-url`) might require server-side environment variables that are *not* prefixed with `NEXT_PUBLIC_`. These should be set in your deployment environment (e.g., Vercel environment variables) or in your local `.env.local` file for local development. They are not exposed to the browser.
+    *   `SUPABASE_SERVICE_KEY`: Your Supabase project service role key. This is used by Next.js API routes that need to perform privileged Supabase operations (like the one generating signed URLs for private buckets if using a service client directly there).
+
+### Backend (FastAPI - `backend/.env`)
 
 1.  Navigate to the `backend/` directory.
 2.  Copy `backend/.env.example` to a new file named `backend/.env`.
@@ -76,12 +81,17 @@ Proper configuration of environment variables is crucial for the application to 
     cp backend/.env.example backend/.env
     ```
 3.  Edit `backend/.env` and fill in the following variables:
-    -   `OPENAI_API_KEY`: Your OpenAI API key. This is required for the AI agents to function. You can obtain an API key from [OpenAI Platform](https://platform.openai.com/signup).
-    -   `GEMINI_API_KEY` (Optional): Your Google Gemini API key if you plan to integrate or switch to Gemini models.
-    -   `ALLOWED_ORIGINS`: A comma-separated list of URLs that are allowed to make requests to the backend API (CORS configuration). For local development, this should typically be your frontend URL (e.g., `http://localhost:3000`). For production, list your deployed frontend domain(s). Example: `ALLOWED_ORIGINS=http://localhost:3000,https://your-frontend-app.com`.
-    -   `SUPABASE_URL`: Your Supabase project URL (the same one used for `NEXT_PUBLIC_SUPABASE_URL` in the frontend). This is needed by the backend for admin/service operations like generating signed URLs.
-    -   `SUPABASE_SERVICE_KEY`: Your Supabase project service role key. **This key has admin privileges and must be kept secret and secure.** Do not expose it on the client-side. It's used by the backend for privileged operations.
-    -   The `.env` file can also be used to set `PYTHONPATH=.` if needed, although typically not required if running commands from the `backend` directory.
+    *   `OPENAI_API_KEY`: Your OpenAI API key, required for AI agent functionality.
+    *   `SUPABASE_URL`: Your Supabase project URL (can be the same as `NEXT_PUBLIC_SUPABASE_URL`). Used by the backend for its Supabase client.
+    *   `SUPABASE_SERVICE_KEY`: Your Supabase project service role key. **This key has admin privileges and must be kept secret.** It's used by the backend for privileged operations (e.g., `status.py`, `crew_runner.py`).
+    *   `ALLOWED_ORIGINS`: A comma-separated list of frontend URLs allowed for CORS.
+        *   Example: `http://localhost:3000,https://your-production-frontend.com`
+    *   `OPENAI_DEFAULT_MODEL`: (Optional, defaults to "gpt-4o" in code) The default OpenAI model name to be used by Crew AI agents.
+        *   Example: `gpt-4o` or `gpt-3.5-turbo`.
+    *   `SUPABASE_GENERATED_DOCUMENTS_BUCKET`: (Optional, defaults to "generated_documents" in code) The Supabase Storage bucket name where AI-generated documents are stored.
+        *   Example: `generated_documents`
+
+    The `GEMINI_API_KEY` and `PYTHONPATH` variables mentioned previously in some examples are optional and depend on specific setup needs.
 
 ## Supabase Storage Security and Validation
 

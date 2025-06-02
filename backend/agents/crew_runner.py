@@ -6,6 +6,8 @@ import uuid # Standard library for generating unique IDs
 import json # For handling JSON strings, especially from LLM outputs
 from textwrap import dedent # For cleaner multi-line string definitions (e.g., backstories)
 import io # For handling byte streams for file processing
+import datetime # For generating timestamps, e.g., for 'generation_date'
+import jinja2 # For document templating
 
 # Third-party libraries for file processing
 import requests
@@ -138,9 +140,11 @@ class LawFirmCrewRunner:
             print("CrewRunner: OpenAI API key found. Initializing LLM.")
             try:
                 # Initialize ChatOpenAI with specific parameters.
-                # gpt-4o is chosen for its capabilities, including potentially better JSON output handling.
+                # Model name is configurable via environment variable.
                 # Temperature is set to 0.2 for more deterministic and less "creative" outputs.
-                self.llm = ChatOpenAI(api_key=openai_api_key, temperature=0.2, model_name="gpt-4o")
+                default_model = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4o")
+                print(f"CrewRunner: Using OpenAI model: {default_model}")
+                self.llm = ChatOpenAI(api_key=openai_api_key, temperature=0.2, model_name=default_model)
             except Exception as e:
                 # If LLM initialization fails, log the error and ensure self.llm is None.
                 print(f"CrewRunner: Error initializing OpenAI LLM: {e}. Real LLM capabilities will be disabled.")
@@ -189,31 +193,80 @@ class LawFirmCrewRunner:
             **common_agent_args
         )
 
-    def run_crew(self, document_info: dict, user_query: str = None):
+        # Agent for drafting documents from templates.
+        self.document_drafter_agent = Agent(
+            role='DocumentDrafterAgent',
+            goal=dedent("""\
+                Generate a document by filling a specified Jinja2 template with provided structured client data and operator instructions.
+                Focus on accurately populating the template based on the inputs.
+                The final output should ONLY be the populated template content. Do not add any extra commentary."""),
+            backstory=dedent("""A meticulous agent specializing in document generation. 
+            It takes structured data, operator guidelines, and a template, then precisely assembles the final document."""),
+            # This agent primarily uses the LLM's understanding to fill the template based on the prompt.
+            # No specific external tools are assigned here, but it can use self.llm.
+            **common_agent_args
+        )
+        
+        # Initialize Supabase client for internal use (e.g., by document_content_fetcher_tool and drafting crew)
+        # This avoids re-initializing it multiple times if multiple methods need it.
+        self.supabase_client: SupabaseClient = None
+        _supabase_url = os.getenv("SUPABASE_URL")
+        _supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY")
+        if _supabase_url and _supabase_service_key:
+            try:
+                self.supabase_client = create_supabase_client(_supabase_url, _supabase_service_key)
+                print("CrewRunner: Supabase client initialized for internal operations.")
+            except Exception as e:
+                print(f"CrewRunner: Error initializing internal Supabase client: {e}")
+        else:
+            print("CrewRunner: Warning: SUPABASE_URL or SUPABASE_SERVICE_KEY not set. Internal Supabase operations will fail.")
+
+
+    def _load_template(self, template_id: str) -> str | None:
         """
-        Runs the legal analysis crew. This involves:
-        1. Initializing a main task ID for status tracking.
+        Loads a Jinja2 template from the backend/templates directory.
+        Args:
+            template_id (str): The filename of the template (e.g., 'nda_template.jinja2').
+        Returns:
+            str: The content of the template file, or None if an error occurs.
+        """
+        try:
+            # Assuming this script is in backend/agents/ and templates are in backend/templates/
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Moves up to backend/
+            template_path = os.path.join(base_dir, 'templates', template_id)
+            
+            print(f"CrewRunner: Attempting to load template from: {template_path}")
+            with open(template_path, 'r', encoding='utf-8') as f:
+                template_content = f.read()
+            print(f"CrewRunner: Template '{template_id}' loaded successfully.")
+            return template_content
+        except FileNotFoundError:
+            print(f"CrewRunner: Error - Template file not found: {template_path}")
+            return None
+        except Exception as e:
+            print(f"CrewRunner: Error loading template '{template_id}': {e}")
+            return None
+
+    def run_crew(self, task_id_from_endpoint: str, document_info: dict, user_query: str = None):
+        """
+        Runs the document parsing and task definition crew. This involves:
+        1. Using the provided task_id_from_endpoint for status tracking.
         2. Defining tasks for document parsing and subsequent task definition.
         3. Executing these tasks using the configured Crew (either with a real LLM or mock fallbacks).
         4. Updating the status of the main task ID throughout the process.
 
         Args:
+            task_id_from_endpoint (str): The task ID generated by the endpoint, used for status tracking.
             document_info (dict): Information about the document, potentially including
-                                  'file_url', 'filename', and 'extracted_text'.
+                                  'file_path', 'bucket_name', 'filename', and 'extracted_text'.
             user_query (str, optional): A specific query from the user regarding the document.
 
         Returns:
             dict: A dictionary containing the status of the crew run ('success' or 'error'),
                   the main_task_id, and the results (either from LLM or mock).
         """
-        # Generate a new main_task_id for this specific crew run.
-        # This allows tracking the overall progress of the document processing.
-        self.main_task_id = update_task_status(
-            task_id=None, # Ensures a new ID is generated by status.py
-            current_status='pending',
-            details='Crew run initiated.'
-        )
-        print(f"CrewRunner: Main Task ID for this run: {self.main_task_id}")
+        self.main_task_id = task_id_from_endpoint
+        print(f"CrewRunner: Received Task ID for this run: {self.main_task_id}")
         
         filename = document_info.get("filename", "N/A")
         # file_url is no longer passed directly from main.py, tool will generate it from file_path and bucket_name
@@ -230,8 +283,13 @@ class LawFirmCrewRunner:
         actual_crew_result = None # To store the final output from the crew.
 
         try:
-            # Update status: Document parsing and summarization step begins.
-            update_task_status(self.main_task_id, 'in_progress', f'Document parsing and summarization in progress for: {filename}')
+            # Update status: AI processing (document parsing and summarization) starts.
+            # crew_type and user_id would have been set when the task was initially queued from the endpoint.
+            update_task_status(
+                task_id=self.main_task_id,
+                current_status='in_progress',
+                details=f'AI processing started for document: {filename}'
+            )
 
             # --- Define Parsing Task ---
             # This task is handled by the DocumentParserAgent.
@@ -316,7 +374,12 @@ class LawFirmCrewRunner:
                 actual_crew_result = crew.kickoff(inputs=kickoff_inputs)
                 
                 # Update status: Follow-up task generation (second step of the crew) is in progress.
-                update_task_status(self.main_task_id, 'in_progress', 'Generating follow-up tasks using LLM...')
+                # No need to change this update_task_status call as it's just detailing the current step.
+                update_task_status(
+                    task_id=self.main_task_id, 
+                    current_status='in_progress', 
+                    details='Generating follow-up tasks using LLM...'
+                )
                 print(f"CrewRunner: LLM-powered crew finished for Task ID: {self.main_task_id}. Result: {actual_crew_result}")
 
             else: 
@@ -336,7 +399,12 @@ class LawFirmCrewRunner:
                 # In a real sequential execution, this output would be passed to the next task.
                 # The Crew AI framework handles this. For mock, we just log it.
                 
-                update_task_status(self.main_task_id, 'in_progress', 'Generating mock follow-up tasks...')
+                # Update status for mock follow-up task generation.
+                update_task_status(
+                    task_id=self.main_task_id,
+                    current_status='in_progress', 
+                    details='Generating mock follow-up tasks...'
+                )
                 
                 # Simulate output for task_def_task.
                 mock_task_definitions = [
@@ -377,7 +445,12 @@ class LawFirmCrewRunner:
                         final_status_details["text_extraction_detail"] = extracted_text_from_parser
                         # Modify the main message to reflect this issue
                         status_message = f'Crew processing finished for {filename}, but text extraction failed or yielded no content.'
-                        update_task_status(self.main_task_id, 'completed_with_issues', status_message, details=final_status_details)
+                        update_task_status(
+                            task_id=self.main_task_id, 
+                            current_status='completed_with_issues', 
+                            details=status_message, # API for update_task_status uses 'details' for main message here
+                            result_data=final_status_details # Store the detailed breakdown in result_data
+                        )
                         # The overall status is still "success" as the crew ran, but results indicate the issue.
                         return {"status": "success_with_issues", "task_id": self.main_task_id, "results": final_status_details}
 
@@ -391,7 +464,12 @@ class LawFirmCrewRunner:
                 final_status_details["text_extraction_status"] = "no_parser_output"
 
             # Default final status update if no specific extraction errors were caught above
-            update_task_status(self.main_task_id, 'completed', f'Crew processing finished successfully for {filename}.', details=final_status_details)
+            update_task_status(
+                task_id=self.main_task_id, 
+                current_status='completed', 
+                details=f'Crew processing finished successfully for {filename}.', 
+                result_data=final_status_details
+            )
             return {"status": "success", "task_id": self.main_task_id, "results": final_status_details}
 
         except Exception as e:
@@ -399,17 +477,246 @@ class LawFirmCrewRunner:
             error_message = f"Error during crew execution for Task ID {self.main_task_id}: {str(e)}"
             print(f"CrewRunner: {error_message}")
             import traceback # For detailed error logging.
-            traceback.print_exc() 
+            tb_str = traceback.format_exc()
+            print(tb_str)
 
             # Handle cases where main_task_id might not have been set (e.g., error in initial status update).
-            if not hasattr(self, 'main_task_id') or not self.main_task_id:
-                print(f"CrewRunner: Critical error before main_task_id assignment or in early stages: {str(e)}")
-                # TODO: Consider a more robust way to handle/log critical early failures.
+            # This check should ideally not be needed if task_id_from_endpoint is always valid.
+            if not self.main_task_id: # Simplified check
+                print(f"CrewRunner: Critical error - main_task_id is not set: {str(e)}")
+                # This scenario should be rare if task_id_from_endpoint is always provided.
                 return {"status": "error", "task_id": None, "message": f"Critical error: {str(e)}"}
             
             # Update status to 'error' and include error details.
-            update_task_status(self.main_task_id, 'error', f"An error occurred: {str(e)}", details={"error_details": str(e), "traceback": traceback.format_exc()})
+            update_task_status(
+                task_id=self.main_task_id, 
+                current_status='error', 
+                details=f"An error occurred during AI processing: {str(e)}", # This becomes error_message in Supabase
+                result_data={"error_details": str(e), "traceback": tb_str} # Store full traceback in result
+            )
             return {"status": "error", "task_id": self.main_task_id, "message": str(e)}
+
+
+    def run_document_drafting_crew(self, task_id_from_endpoint: str, case_id: str, client_data_json: dict, operator_instructions: str, template_id: str, user_id: str = None):
+        """
+        Runs the document drafting crew.
+        This involves loading a template, preparing a prompt for the LLM to fill it,
+        generating the document, saving it to storage, and recording it in the database.
+        """
+        self.main_task_id = task_id_from_endpoint
+        print(f"CrewRunner: Document Drafting Crew started for Task ID: {self.main_task_id}, Case ID: {case_id}, Template: {template_id}")
+
+        update_task_status(
+            task_id=self.main_task_id,
+            current_status='in_progress',
+            details=f'Document drafting started for template: {template_id}, Case ID: {case_id}.',
+            crew_type='document_drafter', # Make sure this is passed to status for filtering/identification
+            user_id=user_id
+        )
+
+        if not self.llm:
+            update_task_status(self.main_task_id, 'error', 'LLM not available for document drafting.', result_data={"error_details": "LLM client not initialized."})
+            return {"status": "error", "task_id": self.main_task_id, "message": "LLM not available."}
+
+        if not self.supabase_client:
+            update_task_status(self.main_task_id, 'error', 'Supabase client not available for document drafting storage/DB operations.', result_data={"error_details": "Supabase client not initialized."})
+            return {"status": "error", "task_id": self.main_task_id, "message": "Supabase client not available."}
+
+        # 1. Load Template
+        template_content = self._load_template(template_id)
+        if not template_content:
+            update_task_status(self.main_task_id, 'error', f"Failed to load template: {template_id}", result_data={"error_details": f"Template file '{template_id}' not found or could not be read."})
+            return {"status": "error", "task_id": self.main_task_id, "message": f"Failed to load template: {template_id}"}
+
+        # 2. Prepare LLM Prompt for Drafting Task
+        generation_date_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
+        
+        # We will use Jinja2 locally to pre-fill some metadata, then pass the mostly-filled template to LLM
+        # for content fields. This is a hybrid approach.
+        # Alternatively, the LLM could be given the raw template and all data, but this is more direct.
+        try:
+            jinja_env = jinja2.Environment(loader=jinja2.FileSystemLoader(os.path.dirname(self._load_template.__code__.co_filename) + '/../templates/')) # Path to templates dir
+            template_obj = jinja_env.from_string(template_content) # Load from string after initial load
+            
+            # Pre-render with basic, non-sensitive data that LLM doesn't need to "decide" on
+            # The LLM will be asked to fill in the substantive parts based on client_data and instructions
+            # For this example, we'll let the LLM handle all {{ ... }} replacements based on the prompt.
+            # The prompt will contain the raw template content.
+        except Exception as e:
+            print(f"CrewRunner: Jinja2 pre-rendering step failed (should not happen with from_string if template loaded): {e}")
+            # Fallback: use raw template_content if pre-rendering concept causes issues.
+            # For this subtask, the LLM is expected to handle the Jinja-like syntax based on the prompt.
+
+        drafting_task_desc = dedent(f"""\
+            You are tasked with generating a document by filling a Jinja2-like template.
+            Your goal is to populate the template with the provided client data and adhere to operator instructions.
+            The final output must ONLY be the populated template content. Do not add any extra commentary, preamble, or sign-off that isn't part of the template itself.
+
+            Template Content:
+            --- TEMPLATE START ---
+            {template_content}
+            --- TEMPLATE END ---
+
+            Structured Client Data (JSON format):
+            --- CLIENT DATA START ---
+            {json.dumps(client_data_json, indent=2)}
+            --- CLIENT DATA END ---
+
+            Operator's Instructions:
+            --- OPERATOR INSTRUCTIONS START ---
+            {operator_instructions}
+            --- OPERATOR INSTRUCTIONS END ---
+
+            Instructions for Filling the Template:
+            1.  Replace placeholders like `{{{{ client_data.some_field }}}}` with values from the "Structured Client Data".
+            2.  If a field in "Structured Client Data" is missing or null, and the template specifies a default (e.g., `| default('N/A')`), imagine that default is applied or simply leave it as per template's default logic if not explicitly asked to fill. For fields like `{{{{ client_data.field | default("Text") }}}}`, if `client_data.field` is "Actual Value", use "Actual Value". If `client_data.field` is missing, use "Text".
+            3.  Incorporate "Operator's Instructions" where the template has `{{{{ operator_instructions }}}}` or as general guidance for filling other fields if the instructions imply so.
+            4.  The placeholder `{{{{ generation_date }}}}` should be filled with: "{generation_date_str}".
+            5.  The placeholder `{{{{ case_id }}}}` should be filled with: "{case_id}".
+            6.  Ensure the output is ONLY the fully populated document. Verify no extra text outside the document structure.
+            """)
+
+        drafting_task = Task(
+            description=drafting_task_desc,
+            expected_output="The fully populated document as a single string, with no additional surrounding text or explanations.",
+            agent=self.document_drafter_agent,
+            async_execution=False,
+        )
+
+        drafting_crew = Crew(
+            agents=[self.document_drafter_agent],
+            tasks=[drafting_task],
+            process=Process.sequential,
+            verbose=2
+        )
+        
+        generated_document_str = None
+        try:
+            print(f"CrewRunner: Kicking off Document Drafting Crew for Task ID: {self.main_task_id}")
+            # Inputs for kickoff can be minimal if all info is in the task description's prompt
+            crew_result = drafting_crew.kickoff(inputs={}) 
+            
+            if isinstance(crew_result, str) and crew_result.strip(): # Crew AI might return raw string from single task
+                generated_document_str = crew_result.strip()
+            elif hasattr(crew_result, 'raw_output') and isinstance(crew_result.raw_output, str): # If it's a TaskOutput object
+                 generated_document_str = crew_result.raw_output.strip()
+            elif isinstance(crew_result, dict) and 'result' in crew_result and isinstance(crew_result['result'], str): # If crew returns a dict
+                generated_document_str = crew_result['result'].strip()
+
+            if not generated_document_str:
+                # Check task output directly if crew_result is not the string
+                task_output = drafting_task.output
+                if task_output and isinstance(task_output.raw_output, str) and task_output.raw_output.strip():
+                    generated_document_str = task_output.raw_output.strip()
+                else:
+                    print(f"CrewRunner: Document drafting crew result was empty or not a string. Result: {crew_result}, Task Output: {task_output}")
+                    raise ValueError("LLM did not produce a document string.")
+            
+            print(f"CrewRunner: Document drafting crew finished for Task ID: {self.main_task_id}. (First 100 chars of doc): {generated_document_str[:100]}")
+
+        except Exception as e:
+            print(f"CrewRunner: Error during document drafting crew execution for Task ID {self.main_task_id}: {e}")
+            import traceback
+            tb_str = traceback.format_exc()
+            update_task_status(self.main_task_id, 'error', f"LLM failed to generate document: {str(e)}", result_data={"error_details": str(e), "traceback": tb_str})
+            return {"status": "error", "task_id": self.main_task_id, "message": f"LLM execution error: {str(e)}"}
+
+        # 3. Save to Supabase Storage
+        # Use .txt for simplicity; could be .docx if converting with another tool later.
+        output_filename = f"{template_id.replace('.jinja2', '')}_{case_id.replace('-', '')}_{self.main_task_id.replace('-', '')}.txt"
+        storage_bucket_name = os.getenv("SUPABASE_GENERATED_DOCUMENTS_BUCKET", "generated_documents")
+        print(f"CrewRunner: Using target bucket for generated documents: {storage_bucket_name}")
+        storage_file_path = f"{case_id}/{output_filename}" # Store under case_id folder
+
+        try:
+            # Convert string to bytes for upload
+            file_bytes = generated_document_str.encode('utf-8')
+            file_size = len(file_bytes)
+
+            # Check if self.supabase_client is initialized (it should be from __init__)
+            if not self.supabase_client:
+                 raise ConnectionError("Supabase client not initialized in CrewRunner.")
+
+            upload_response = self.supabase_client.storage.from_(storage_bucket_name).upload(
+                path=storage_file_path,
+                file=file_bytes, # Pass bytes directly
+                file_options={"content-type": "text/plain;charset=utf-8", "upsert": "true"} # Upsert to overwrite if exists
+            )
+            print(f"CrewRunner: Upload response for {storage_file_path}: {upload_response.get('id') if hasattr(upload_response, 'get') else 'No ID in response'}") # Supabase py v2 returns dict not object with id
+            # Supabase Python client v2 upload returns a dict like {'id': '...', 'path': '...', ...} on success
+            # or throws an error which should be caught by the except block.
+            # No specific error object in response dict for v2, it raises StorageException.
+
+        except Exception as e: # Catch Supabase specific StorageException or general errors
+            print(f"CrewRunner: Error uploading generated document to Supabase Storage for Task ID {self.main_task_id}: {e}")
+            import traceback
+            tb_str = traceback.format_exc()
+            update_task_status(self.main_task_id, 'error', f"Failed to upload document to storage: {str(e)}", result_data={"error_details": str(e), "traceback": tb_str})
+            return {"status": "error", "task_id": self.main_task_id, "message": f"Storage upload error: {str(e)}"}
+
+        # 4. Add Record to `documents` Table
+        document_record = {
+            "case_id": case_id,
+            "file_name": output_filename,
+            "storage_path": storage_file_path, # Path used for upload is the storage_path
+            "file_size": file_size,
+            "file_type": "text/plain", # MIME type
+            "bucket_name": storage_bucket_name,
+            "status": "generated", # Or 'pending_review'
+            "upload_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "uploaded_by_user_id": user_id, # Ensure this matches your DB column name
+            "document_type": f"generated_{template_id.replace('.jinja2', '')}",
+            "description": f"AI-generated document based on template '{template_id}'. Task ID: {self.main_task_id}.",
+            "ai_processing_task_id": self.main_task_id # Link back to the AI task
+        }
+
+        try:
+            db_response = self.supabase_client.table("documents").insert(document_record).execute()
+            
+            # supabase-py v2: response.data is a list of dicts
+            if db_response.data and len(db_response.data) > 0:
+                inserted_doc_id = db_response.data[0].get("id")
+                print(f"CrewRunner: Document record inserted into 'documents' table with ID: {inserted_doc_id} for Task ID: {self.main_task_id}")
+                # Update task status to completed
+                update_task_status(
+                    task_id=self.main_task_id,
+                    current_status='completed',
+                    details=f'Document "{output_filename}" generated and saved successfully.',
+                    result_data={
+                        "document_id": inserted_doc_id,
+                        "storage_path": storage_file_path,
+                        "filename": output_filename,
+                        "bucket": storage_bucket_name
+                    }
+                )
+                return {"status": "success", "task_id": self.main_task_id, "document_id": inserted_doc_id, "storage_path": storage_file_path}
+            else:
+                # Handle cases where insert might not return data as expected or error is in response
+                error_msg = "Failed to insert document record into database or no ID returned."
+                if hasattr(db_response, 'error') and db_response.error:
+                    error_msg += f" DB Error: {db_response.error.message}"
+                print(f"CrewRunner: {error_msg} for Task ID: {self.main_task_id}")
+                # Attempt to delete the uploaded file from storage to prevent orphans
+                try:
+                    self.supabase_client.storage.from_(storage_bucket_name).remove([storage_file_path])
+                    print(f"CrewRunner: Cleaned up orphaned file from storage: {storage_file_path}")
+                except Exception as cleanup_e:
+                    print(f"CrewRunner: Error during cleanup of orphaned file {storage_file_path}: {cleanup_e}")
+                update_task_status(self.main_task_id, 'error', error_msg, result_data={"db_response": str(db_response)})
+                return {"status": "error", "task_id": self.main_task_id, "message": error_msg}
+
+        except Exception as e:
+            print(f"CrewRunner: Error inserting document record into Supabase DB for Task ID {self.main_task_id}: {e}")
+            import traceback
+            tb_str = traceback.format_exc()
+            # Attempt to delete the uploaded file from storage
+            try:
+                self.supabase_client.storage.from_(storage_bucket_name).remove([storage_file_path])
+                print(f"CrewRunner: Cleaned up orphaned file from storage due to DB error: {storage_file_path}")
+            except Exception as cleanup_e:
+                print(f"CrewRunner: Error during cleanup of orphaned file {storage_file_path} after DB error: {cleanup_e}")
+            update_task_status(self.main_task_id, 'error', f"Failed to save document record to database: {str(e)}", result_data={"error_details": str(e), "traceback": tb_str})
+            return {"status": "error", "task_id": self.main_task_id, "message": f"Database insert error: {str(e)}"}
 
 
 def get_crew_runner_instance():
@@ -434,8 +741,13 @@ if __name__ == '__main__':
     }
     sample_user_query_contract = "Summarize the key terms and what are the termination conditions?"
     
-    print(f"\nRunning crew with Document (with pre-extracted text): {sample_doc_info_with_text['filename']}, Query: '{sample_user_query_contract}'")
-    run_result_text = runner.run_crew(document_info=sample_doc_info_with_text, user_query=sample_user_query_contract)
+    # Simulate a task ID being passed from an endpoint
+    test_task_id_1 = str(uuid.uuid4())
+    print(f"\nRunning crew with Document (with pre-extracted text): {sample_doc_info_with_text['filename']}, Query: '{sample_user_query_contract}', Task ID: {test_task_id_1}")
+    # Mock initial status update that would happen in the endpoint
+    update_task_status(task_id=test_task_id_1, current_status='queued', details=f"Test task queued for {sample_doc_info_with_text['filename']}", crew_type="test_parser")
+    
+    run_result_text = runner.run_crew(task_id_from_endpoint=test_task_id_1, document_info=sample_doc_info_with_text, user_query=sample_user_query_contract)
     print(f"\n--- Direct Result from run_crew (with text) ---")
     print(run_result_text)
     if run_result_text and run_result_text.get("task_id"):
@@ -446,13 +758,20 @@ if __name__ == '__main__':
 
     sample_doc_info_no_text = {
         "filename": "important_research_paper.docx",
-        "file_url": "file:///path/to/important_research_paper.docx",
-        # No 'extracted_text' field, will trigger mock text generation if LLM is on, or full mock if LLM off
+        # "file_url" is not used by the tool, "file_path" and "bucket_name" are.
+        # For local testing of the tool, you'd need a mock Supabase or a real one.
+        # Here, we are testing the crew runner logic, so we assume the tool would be called.
+        "file_path": "test_documents/important_research_paper.docx", # Example path
+        "bucket_name": "test_bucket" # Example bucket
+        # No 'extracted_text' field
     }
     sample_user_query_paper = "What are the main findings of this paper and suggest future research directions."
     
-    print(f"\nRunning crew with Document (NO pre-extracted text): {sample_doc_info_no_text['filename']}, Query: '{sample_user_query_paper}'")
-    run_result_no_text = runner.run_crew(document_info=sample_doc_info_no_text, user_query=sample_user_query_paper)
+    test_task_id_2 = str(uuid.uuid4())
+    print(f"\nRunning crew with Document (NO pre-extracted text): {sample_doc_info_no_text['filename']}, Query: '{sample_user_query_paper}', Task ID: {test_task_id_2}")
+    update_task_status(task_id=test_task_id_2, current_status='queued', details=f"Test task queued for {sample_doc_info_no_text['filename']}", crew_type="test_parser")
+        
+    run_result_no_text = runner.run_crew(task_id_from_endpoint=test_task_id_2, document_info=sample_doc_info_no_text, user_query=sample_user_query_paper)
     print(f"\n--- Direct Result from run_crew (no text) ---")
     print(run_result_no_text)
     if run_result_no_text and run_result_no_text.get("task_id"):
@@ -460,9 +779,64 @@ if __name__ == '__main__':
         print(get_agent_status(run_result_no_text['task_id']))
 
     print("\n--- Testing with no user query (with pre-extracted text) ---")
-    run_result_no_query = runner.run_crew(document_info=sample_doc_info_with_text, user_query="")
+    test_task_id_3 = str(uuid.uuid4())
+    update_task_status(task_id=test_task_id_3, current_status='queued', details=f"Test task queued for {sample_doc_info_with_text['filename']} (no query)", crew_type="test_parser")
+    
+    run_result_no_query = runner.run_crew(task_id_from_endpoint=test_task_id_3, document_info=sample_doc_info_with_text, user_query="")
     print(f"\n--- Direct Result from run_crew (no query) ---")
     print(run_result_no_query)
     if run_result_no_query and run_result_no_query.get("task_id"):
         print(f"\n--- Final Status from get_agent_status (Task ID: {run_result_no_query['task_id']}) (no query) ---")
         print(get_agent_status(run_result_no_query['task_id']))
+
+    print("\n" + "="*50 + "\n")
+    print("--- Crew Runner Document Drafting Test ---")
+
+    # Ensure SUPABASE_URL and SUPABASE_SERVICE_KEY are set for storage/DB operations.
+    # Also OPENAI_API_KEY for the LLM.
+    if runner.llm and runner.supabase_client:
+        draft_task_id = str(uuid.uuid4())
+        sample_case_id = "CASE-001"
+        sample_client_data = {
+            "disclosing_party_name": "Innovate Corp",
+            "disclosing_party_address": "123 Tech Park, Silicon Valley, CA",
+            "receiving_party_name": "Beta Solutions Ltd.",
+            "receiving_party_address": "456 Business Bay, Bangalore, India",
+            "effective_date": "2024-04-01",
+            "purpose_of_nda": "Evaluation of potential business collaboration.",
+            "definition_of_confidential_information": "All technical, business, and financial information exchanged.",
+            "additional_clauses": "Any software provided under this NDA remains the property of Innovate Corp."
+        }
+        sample_operator_instructions = "Ensure the purpose is clearly stated. The jurisdiction for any disputes should be California."
+        sample_template_id = "nda_template.jinja2" # Ensure this template exists in backend/templates/
+        
+        # Mock initial 'queued' status for the drafting task
+        update_task_status(
+            task_id=draft_task_id,
+            current_status='queued',
+            details=f"Document drafting task queued for template {sample_template_id}, Case ID {sample_case_id}",
+            crew_type='document_drafter',
+            # user_id="test_user_drafting" # Example user ID
+        )
+
+        print(f"\nRunning document drafting crew for Task ID: {draft_task_id}, Template: {sample_template_id}")
+        drafting_result = runner.run_document_drafting_crew(
+            task_id_from_endpoint=draft_task_id,
+            case_id=sample_case_id,
+            client_data_json=sample_client_data,
+            operator_instructions=sample_operator_instructions,
+            template_id=sample_template_id,
+            # user_id="test_user_drafting"
+        )
+        print(f"\n--- Direct Result from run_document_drafting_crew ---")
+        print(drafting_result)
+        if drafting_result and drafting_result.get("task_id"):
+            print(f"\n--- Final Status from get_agent_status (Drafting Task ID: {drafting_result['task_id']}) ---")
+            final_status_draft = get_agent_status(drafting_result['task_id'])
+            print(final_status_draft)
+            if final_status_draft.get("status") == "completed":
+                print(f"Drafted document details: {final_status_draft.get('result')}")
+    else:
+        print("\nSkipping Document Drafting Test: LLM or Supabase client not initialized (check API keys and .env).")
+
+    print("\n--- All Tests Concluded ---")

@@ -1,0 +1,19 @@
+{{ client_data.recipient_name | default('Valued Client') }}
+{{ client_data.recipient_address | default('Their Address') }}
+
+Date: {{ generation_date }}
+
+Regarding Case: {{ case_id }}
+Client Name: {{ client_data.client_name | default('N/A') }}
+
+Dear {{ client_data.recipient_name | default('Sir/Madam') }},
+
+Subject: {{ client_data.letter_subject | default('Important Matter') }}
+
+{{ client_data.letter_body | default('This is a standard letter body. Please replace with specific content.') }}
+
+Operator Instructions Considered:
+{{ operator_instructions | default('No specific instructions provided.') }}
+
+Sincerely,
+Giulianni Law Firm

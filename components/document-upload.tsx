@@ -481,7 +481,17 @@ export default function DocumentUpload({
     let aiError: string | undefined = undefined
 
     try {
-      const backendApiUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL || "http://localhost:8000"
+      const backendApiUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL;
+      if (!backendApiUrl) {
+        setMessage({ type: "error", text: "Backend API URL is not configured. Cannot start AI processing." });
+        setProcessingAICall(false); // Ensure this is reset
+        setShowAiRetryButton(true); // Allow retry if URL gets configured
+        setAiProcessingError("Backend API URL not configured.");
+        if (onUploadComplete) {
+          onUploadComplete({ dbDocument, aiError: "Backend API URL not configured." });
+        }
+        return;
+      }
 
       const aiResponse = await fetch(`${backendApiUrl}/parse-document/`, {
         method: "POST",

@@ -45,7 +45,8 @@ export default function TaskStatusPage() {
     }
 
     try {
-      const response = await fetch(`http://localhost:8000/agent-status/?task_id=${currentTaskId}`)
+      const backendApiUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL || "http://localhost:8000";
+      const response = await fetch(`${backendApiUrl}/agent-status/?task_id=${currentTaskId}`)
       
       if (response.ok) {
         const data: TaskStatusData = await response.json()

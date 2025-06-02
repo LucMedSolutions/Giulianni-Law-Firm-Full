@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { FileText, Search, Upload, Download, Eye, File, FileImage, FileIcon as FilePdf } from "lucide-react"
+import DocumentUpload from "@/components/document-upload" // Import the new component
+import { useToast } from "@/components/ui/use-toast" // For success toast
 
 export default function ClientDocuments() {
   const [documents, setDocuments] = useState<any[]>([])
@@ -16,90 +18,99 @@ export default function ClientDocuments() {
   const [searchQuery, setSearchQuery] = useState("")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selectedDocument, setSelectedDocument] = useState<any | null>(null)
+  const [selectedDocument, setSelectedDocument] = useState<any | null>(null) // Will now also store signedPreviewUrl
   const [viewerOpen, setViewerOpen] = useState(false)
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false) // State for modal
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null) // State for current user ID
+  const [loadingSignedUrlFor, setLoadingSignedUrlFor] = useState<string | null>(null) // Track which doc's URL is loading
+
   const router = useRouter()
   const supabase = createClientComponentClient()
+  const { toast } = useToast() // Initialize toast
 
-  useEffect(() => {
-    const fetchDocuments = async () => {
-      setLoading(true)
-      setError(null)
+  const fetchDocuments = async () => {
+    setLoading(true)
+    setError(null)
 
-      try {
-        // Check if user is authenticated
-        const {
-          data: { session },
-        } = await supabase.auth.getSession()
-
-        if (!session) {
-          router.push("/")
-          return
-        }
-
-        // Get user data
-        const { data: user, error: userError } = await supabase
-          .from("users")
-          .select("role, full_name")
-          .eq("id", session.user.id)
-          .maybeSingle()
-
-        if (userError) throw userError
-        if (!user) throw new Error("User profile not found")
-        if (user.role !== "client") {
-          await supabase.auth.signOut()
-          router.push("/")
-          return
-        }
-
-        // Get client cases
-        const { data: clientCases, error: casesError } = await supabase
-          .from("cases")
-          .select("id, case_number")
-          .eq("client_name", user.full_name)
-
-        if (casesError) throw casesError
-        if (!clientCases || clientCases.length === 0) {
-          setDocuments([])
-          setFilteredDocuments([])
-          setLoading(false)
-          return
-        }
-
-        const caseIds = clientCases.map((c) => c.id)
-
-        // Get documents for client cases
-        const { data: docsData, error: docsError } = await supabase
-          .from("documents")
-          .select(`
-            id, 
-            filename, 
-            file_type, 
-            upload_time, 
-            storage_url,
-            status,
-            notes,
-            case_id,
-            cases(id, case_number)
-          `)
-          .in("case_id", caseIds)
-          .order("upload_time", { ascending: false })
-
-        if (docsError) throw docsError
-
-        setDocuments(docsData || [])
-        setFilteredDocuments(docsData || [])
-      } catch (err: any) {
-        console.error("Error fetching documents:", err)
-        setError(err.message || "Failed to load documents")
-      } finally {
-        setLoading(false)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        router.push("/")
+        return
       }
+      setCurrentUserId(session.user.id) // Set current user ID
+
+      const { data: user, error: userError } = await supabase
+        .from("users")
+        .select("role, full_name")
+        .eq("id", session.user.id)
+        .single()
+
+      if (userError || !user) {
+        setError("Failed to fetch user profile. Please try again.")
+        await supabase.auth.signOut()
+        router.push("/")
+        return
+      }
+
+      if (user.role !== "client") {
+        setError("Access denied. You are not authorized to view this page.")
+        await supabase.auth.signOut()
+        router.push("/")
+        return
+      }
+
+      const { data: clientCases, error: casesError } = await supabase
+        .from("cases")
+        .select("id, case_number")
+        .eq("client_id", session.user.id) // Use client_id which should be user.id for clients
+
+      if (casesError) throw casesError
+
+      if (!clientCases || clientCases.length === 0) {
+        setDocuments([])
+        setFilteredDocuments([])
+        // setLoading(false) //  Moved to finally block
+        return
+      }
+
+      const caseIds = clientCases.map((c) => c.id)
+
+      const { data: docsData, error: docsError } = await supabase
+        .from("documents")
+        .select(`
+          id,
+          filename,
+          file_type,
+          upload_time,
+          storage_url, // This is now the file_path
+          bucket_name, // Added bucket_name
+          status,
+          notes,
+          case_id,
+          cases(id, case_number)
+        `)
+        .in("case_id", caseIds)
+        .order("upload_time", { ascending: false })
+
+      if (docsError) throw docsError
+
+      setDocuments(docsData || [])
+      setFilteredDocuments(docsData || [])
+    } catch (err: any) {
+      console.error("Error fetching documents:", err)
+      setError(err.message || "Failed to load documents")
+    } finally {
+      setLoading(false)
     }
+  }
 
+  // Initial fetch of documents
+  useEffect(() => {
     fetchDocuments()
-  }, [router])
+  }, []) // Removed router from dependencies, fetchDocuments handles session checks.
 
+  // Effect for search query
   useEffect(() => {
     if (searchQuery.trim() === "") {
       setFilteredDocuments(documents)
@@ -129,9 +140,51 @@ export default function ClientDocuments() {
     return date.toLocaleDateString() + " " + date.toLocaleTimeString()
   }
 
+  const getSignedUrlAndAct = async (document: any, action: "view" | "download") => {
+    if (!document || !document.id) {
+      toast({ title: "Error", description: "Document information is missing.", variant: "destructive" })
+      return
+    }
+    setLoadingSignedUrlFor(document.id)
+    try {
+      const response = await fetch(`/api/download-document?documentId=${document.id}`)
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || `Failed to get download URL (status: ${response.status})`)
+      }
+      const { signedUrl } = await response.json()
+
+      if (!signedUrl) {
+        throw new Error("No signed URL received from server.")
+      }
+
+      if (action === "view") {
+        setSelectedDocument({ ...document, signedPreviewUrl: signedUrl })
+        setViewerOpen(true)
+      } else if (action === "download") {
+        window.open(signedUrl, "_blank")
+      }
+    } catch (error: any) {
+      console.error("Error getting signed URL:", error)
+      toast({
+        title: "Error",
+        description: error.message || "Could not retrieve link for the document. Please try again.",
+        variant: "destructive",
+      })
+      // If view action failed, ensure modal doesn't show stale data or open partially
+      if (action === "view") {
+        setSelectedDocument(null) // Or keep old selectedDocument but don't open viewer
+        setViewerOpen(false)
+      }
+    } finally {
+      setLoadingSignedUrlFor(null)
+    }
+  }
+
+  // This function is now primarily for initiating the process that leads to viewing.
+  // The actual opening of the dialog is handled by getSignedUrlAndAct after URL is fetched.
   const handleViewDocument = (document: any) => {
-    setSelectedDocument(document)
-    setViewerOpen(true)
+    getSignedUrlAndAct(document, "view")
   }
 
   if (loading) {
@@ -171,10 +224,56 @@ export default function ClientDocuments() {
       <header className="bg-white border-b border-gray-200 p-4">
         <div className="flex justify-between items-center max-w-7xl mx-auto">
           <h1 className="text-xl font-bold">Documents</h1>
-          <Button onClick={() => router.push("/client-dashboard/documents/upload")}>
-            <Upload className="h-4 w-4 mr-2" />
-            Upload Document
-          </Button>
+          <Dialog open={isUploadModalOpen} onOpenChange={setIsUploadModalOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <Upload className="h-4 w-4 mr-2" />
+                Upload Document
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Upload New Document</DialogTitle>
+                <DialogDescription>
+                  Select a file and choose the case to associate it with.
+                </DialogDescription>
+              </DialogHeader>
+              {currentUserId && (
+                <DocumentUpload
+                  userId={currentUserId}
+                  userRole="client"
+                  onUploadComplete={(uploadResult) => {
+                    setIsUploadModalOpen(false);
+                    if (uploadResult.dbDocument) {
+                      fetchDocuments(); // Refresh document list
+                      if (uploadResult.aiTaskId && !uploadResult.aiError) {
+                        toast({
+                          title: "Upload Successful",
+                          description: `Document "${uploadResult.dbDocument.file_name}" uploaded. AI processing started (Task ID: ${uploadResult.aiTaskId}).`,
+                          variant: "success",
+                        });
+                      } else if (uploadResult.aiError) {
+                        toast({
+                          title: "Upload Complete, AI Issue",
+                          description: `Document "${uploadResult.dbDocument.file_name}" uploaded, but AI processing call failed: ${uploadResult.aiError}. You may be able to retry from the upload modal if it was left open or if you reopen it for that file.`,
+                          variant: "warning",
+                          duration: 10000, // Longer duration for warning with more text
+                        });
+                      } else {
+                        // Fallback if only dbDocument is present (e.g. AI call not attempted or no info returned)
+                         toast({
+                          title: "Upload Successful",
+                          description: `Document "${uploadResult.dbDocument.file_name}" has been uploaded. AI processing status unknown.`,
+                          variant: "success",
+                        });
+                      }
+                    }
+                    // If dbDocument is null, DocumentUpload handles internal error message, onUploadComplete might not be called.
+                  }}
+                />
+              )}
+            </DialogContent>
+          </Dialog>
         </div>
       </header>
 
@@ -213,7 +312,8 @@ export default function ClientDocuments() {
                       : "No documents match your search criteria."}
                   </p>
                   <div className="mt-6">
-                    <Button onClick={() => router.push("/client-dashboard/documents/upload")}>
+                     {/* This button inside empty state can also trigger the modal */}
+                    <Button onClick={() => setIsUploadModalOpen(true)}>
                       <Upload className="h-4 w-4 mr-2" />
                       Upload a document
                     </Button>
@@ -264,16 +364,18 @@ export default function ClientDocuments() {
                                 size="icon"
                                 onClick={() => handleViewDocument(doc)}
                                 title="View Document"
+                                disabled={loadingSignedUrlFor === doc.id}
                               >
-                                <Eye className="h-4 w-4" />
+                                {loadingSignedUrlFor === doc.id ? <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <Eye className="h-4 w-4" />}
                               </Button>
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => window.open(doc.storage_url, "_blank")}
+                                onClick={() => getSignedUrlAndAct(doc, "download")}
                                 title="Download Document"
+                                disabled={loadingSignedUrlFor === doc.id}
                               >
-                                <Download className="h-4 w-4" />
+                               {loadingSignedUrlFor === doc.id ? <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <Download className="h-4 w-4" />}
                               </Button>
                             </div>
                           </td>
@@ -305,23 +407,58 @@ export default function ClientDocuments() {
               <TabsTrigger value="summary">Summary</TabsTrigger>
             </TabsList>
             <TabsContent value="document" className="flex-1 overflow-hidden">
-              {selectedDocument?.file_type.includes("pdf") ? (
+              {selectedDocument?.signedPreviewUrl && selectedDocument?.file_type.includes("pdf") ? (
                 <iframe
-                  src={`${selectedDocument?.storage_url}#toolbar=0`}
+                  src={`${selectedDocument.signedPreviewUrl}#toolbar=0`}
                   className="w-full h-full border-0"
-                  title={selectedDocument?.filename}
+                  title={selectedDocument.filename}
                 />
-              ) : (
+              ) : selectedDocument?.signedPreviewUrl && !selectedDocument?.file_type.includes("pdf") ? (
+                 // Handle non-PDF preview if signedPreviewUrl is available but not for PDF
+                 // For now, show same message as if no preview URL, but offer download
                 <div className="flex items-center justify-center h-full bg-gray-100">
                   <div className="text-center p-6">
                     <FileText className="h-16 w-16 mx-auto text-gray-400 mb-4" />
                     <p className="text-gray-600">
-                      Preview not available for this file type. Please download the file to view it.
+                      Direct preview not available for this file type. Please download the file to view it.
                     </p>
-                    <Button className="mt-4" onClick={() => window.open(selectedDocument?.storage_url, "_blank")}>
-                      <Download className="h-4 w-4 mr-2" />
+                    <Button
+                      className="mt-4"
+                      onClick={() => getSignedUrlAndAct(selectedDocument, "download")}
+                      disabled={loadingSignedUrlFor === selectedDocument?.id}
+                    >
+                      {loadingSignedUrlFor === selectedDocument?.id ? <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <Download className="h-4 w-4 mr-2" />}
                       Download File
                     </Button>
+                  </div>
+                </div>
+              ) : (
+                // Case when signedPreviewUrl is not yet loaded or view was not for PDF
+                <div className="flex items-center justify-center h-full bg-gray-100">
+                  <div className="text-center p-6">
+                    {loadingSignedUrlFor === selectedDocument?.id ? (
+                      <>
+                        <div className="h-16 w-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                        <p className="text-gray-600">Loading secure viewer...</p>
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="h-16 w-16 mx-auto text-gray-400 mb-4" />
+                        <p className="text-gray-600">
+                          {selectedDocument?.file_type && !selectedDocument.file_type.includes("pdf")
+                            ? "Direct preview not available for this file type. Please download to view."
+                            : "Preparing document viewer..."}
+                        </p>
+                         <Button
+                          className="mt-4"
+                          onClick={() => getSignedUrlAndAct(selectedDocument, "download")}
+                          disabled={loadingSignedUrlFor === selectedDocument?.id}
+                        >
+                          {loadingSignedUrlFor === selectedDocument?.id ? <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <Download className="h-4 w-4 mr-2" />}
+                          Download File
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               )}

@@ -1,0 +1,24 @@
+NON-DISCLOSURE AGREEMENT
+
+This Non-Disclosure Agreement (the "Agreement") is entered into by and between:
+Disclosing Party: {{ client_data.disclosing_party_name | default('N/A') }}
+                   located at {{ client_data.disclosing_party_address | default('N/A') }}
+Receiving Party: {{ client_data.receiving_party_name | default('N/A') }}
+                   located at {{ client_data.receiving_party_address | default('N/A') }}
+
+Effective Date: {{ client_data.effective_date | default('Not Specified') }}
+
+Purpose: {{ client_data.purpose_of_nda | default('Not Specified') }}
+
+Confidential Information shall mean: {{ client_data.definition_of_confidential_information | default('As defined in discussions') }}
+
+Operator Instructions:
+{{ operator_instructions | default('No specific instructions provided.') }}
+
+{% if client_data.additional_clauses %}
+Additional Clauses from Client Data:
+{{ client_data.additional_clauses }}
+{% endif %}
+
+Generated on: {{ generation_date }}
+Case ID: {{ case_id }}

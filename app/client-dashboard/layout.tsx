@@ -127,11 +127,34 @@ const ClientDashboardLayout: React.FC<ClientDashboardLayoutProps> = ({ children 
     }
 
     checkAuth()
-  }, [router])
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT" || !session) {
+        setUserData(null)
+        setUnreadNotifications(0)
+        // router.push('/'); // Middleware should handle redirect, but good for immediate UI change
+        // Let checkAuth handle the redirect logic if session is truly gone on next check or if middleware catches it.
+        // Forcing a push here might interfere if middleware is also trying to redirect.
+        // The main goal here is state cleanup.
+        console.log("Client session ended, user state cleared from layout.")
+      } else if (event === "SIGNED_IN") {
+        // Potentially re-fetch user data if needed, or let existing checkAuth handle it.
+        // checkAuth(); // Re-run auth check if user signs in on another tab.
+      }
+    })
+
+    return () => {
+      authListener?.unsubscribe()
+    }
+  }, [router, supabase]) // Added supabase to dependency array for onAuthStateChange
 
   const handleSignOut = async () => {
     await supabase.auth.signOut()
-    router.push("/")
+    // State reset is now primarily handled by onAuthStateChange,
+    // but explicit reset can be good for immediate UI feedback before listener fires.
+    setUserData(null)
+    setUnreadNotifications(0)
+    router.push("/") // Redirect to home or login page
   }
 
   if (loading) {
@@ -252,7 +275,10 @@ const ClientDashboardLayout: React.FC<ClientDashboardLayoutProps> = ({ children 
           </header>
 
           {/* Page Content */}
-          <main className="flex-1 p-4 overflow-y-auto bg-gray-50">{children}</main>
+          {/* Using userData.id as key to force re-mount of children on user change / logout, resetting page state */}
+          <main key={userData?.id || 'logged-out-client'} className="flex-1 p-4 overflow-y-auto bg-gray-50">
+            {children}
+          </main>
 
           {/* Footer with Help */}
           <footer className="bg-white border-t p-4">

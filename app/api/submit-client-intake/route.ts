@@ -17,22 +17,22 @@ export const dynamic = 'force-dynamic';
 
 // Zod Schemas for Validation
 const NdaRequestFormDataSchema = z.object({
-  disclosing_party_name: z.string().min(1, "Disclosing party name is required"),
-  disclosing_party_address: z.string().min(1, "Disclosing party address is required"),
-  receiving_party_name: z.string().min(1, "Receiving party name is required"),
-  receiving_party_address: z.string().min(1, "Receiving party address is required"),
-  effective_date: z.string().min(1, "Effective date is required"), // Consider adding .date() if format is strict
-  purpose_of_nda: z.string().min(1, "Purpose of NDA is required"),
-  definition_of_confidential_information: z.string().min(1, "Definition of confidential information is required"),
+  disclosing_party_name: z.string().min(1, "Disclosing party name is required").trim().max(255),
+  disclosing_party_address: z.string().min(1, "Disclosing party address is required").trim().max(255),
+  receiving_party_name: z.string().min(1, "Receiving party name is required").trim().max(255),
+  receiving_party_address: z.string().min(1, "Receiving party address is required").trim().max(255),
+  effective_date: z.string().min(1, "Effective date is required").trim().pipe(z.coerce.date()),
+  purpose_of_nda: z.string().min(1, "Purpose of NDA is required").trim().max(5000),
+  definition_of_confidential_information: z.string().min(1, "Definition of confidential information is required").trim().max(5000),
   // Add other NDA specific fields here if any
 });
 
 const GeneralConsultationFormDataSchema = z.object({
-  client_full_name: z.string().min(1, "Full name is required"),
-  client_email: z.string().email("Invalid email address"),
-  client_phone: z.string().optional(), // Basic validation, can be stricter
-  type_of_legal_issue: z.string().min(1, "Type of legal issue is required"),
-  brief_description_of_issue: z.string().min(10, "Brief description must be at least 10 characters"),
+  client_full_name: z.string().min(1, "Full name is required").trim().max(255),
+  client_email: z.string().trim().email("Invalid email address").max(255),
+  client_phone: z.string().trim().max(50).optional(), // Basic validation, can be stricter
+  type_of_legal_issue: z.string().min(1, "Type of legal issue is required").trim().max(255),
+  brief_description_of_issue: z.string().min(10, "Brief description must be at least 10 characters").trim().max(5000),
   preferred_contact_method: z.enum(['email', 'phone'], { message: "Preferred contact method must be 'email' or 'phone'" }),
   // Add other general consultation specific fields here if any
 });

@@ -1,5 +1,4 @@
 import { createClientComponentClient, createServerComponentClient } from "@supabase/auth-helpers-nextjs"
-import { cookies } from "next/headers"
 
 export type AuditAction =
   | "login"
@@ -68,8 +67,8 @@ export async function logAuditEvent(entry: AuditLogEntry) {
 }
 
 // Server-side audit logging
-export async function logAuditEventServer(entry: AuditLogEntry) {
-  const supabase = createServerComponentClient({ cookies })
+export async function logAuditEventServer(entry: AuditLogEntry, cookieStore: ReturnType<typeof import("next/headers").cookies>) {
+  const supabase = createServerComponentClient({ cookies: () => cookieStore })
 
   try {
     // Create a base log entry with required fields

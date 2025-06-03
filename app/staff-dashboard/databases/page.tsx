@@ -171,99 +171,85 @@ export default function DatabasesPage() {
 
   return (
     <>
-      
-        
-          
-            
-              Search:
-              
-            
-            
-              Case Status:
-              
-                All
-                Open
-                Closed
-                Pending
-              
-            
-            
-              Document Type:
-              
-                All
-                PDF
-                Word
-                Excel
-              
-            
-            
-              Sort Order:
-              
-                Ascending
-                Descending
-              
-            
-          
-        
+      <div>
+        <div>
+          <div>
+            <label>Search:
+              <input type="text" value={searchTerm} onChange={handleSearch} />
+            </label>
+          </div>
+          <div>
+            <label>Case Status:
+              <select value={caseFilter} onChange={(e) => handleCaseFilterChange(e.target.value)}>
+                <option value="all">All</option>
+                <option value="Open">Open</option>
+                <option value="Closed">Closed</option>
+                <option value="Pending">Pending</option>
+              </select>
+            </label>
+          </div>
+          <div>
+            <label>Document Type:
+              <select value={documentFilter} onChange={(e) => handleDocumentFilterChange(e.target.value)}>
+                <option value="all">All</option>
+                <option value="PDF">PDF</option>
+                <option value="Word">Word</option>
+                <option value="Excel">Excel</option>
+              </select>
+            </label>
+          </div>
+          <div>
+            <label>Sort Order:
+              <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value as "asc" | "desc")}>
+                <option value="asc">Ascending</option>
+                <option value="desc">Descending</option>
+              </select>
+            </label>
+          </div>
+        </div>
 
-        
-          
-            
-              
-                Title
-                Description
-                Status
-                Created At
-              
-            
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Description</th>
+              <th>Status</th>
+              <th>Created At</th>
+            </tr>
+          </thead>
+          <tbody>
             {filteredCases.map((caseItem) => (
-              
-                \
-                  {caseItem.title}
-                
-                
-                  {caseItem.description}
-                
-                
-                  {caseItem.status}
-                
-                
-                  {new Date(caseItem.created_at).toLocaleDateString()}
-                
-              
+              <tr key={caseItem.id}>
+                <td>{caseItem.title}</td>
+                <td>{caseItem.description}</td>
+                <td>{caseItem.status}</td>
+                <td>{new Date(caseItem.created_at).toLocaleDateString()}</td>
+              </tr>
             ))}
-          
-        
+          </tbody>
+        </table>
 
-        
-          
-            
-              
-                Title
-                Description
-                Type
-                Created At
-              
-            
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Description</th>
+              <th>Type</th>
+              <th>Created At</th>
+            </tr>
+          </thead>
+          <tbody>
             {filteredDocuments.map((document) => (
-              
-                
-                  {document.title}
-                
-                
-                  {document.description}
-                
-                
-                  {document.type}
-                
-                
-                  {new Date(document.created_at).toLocaleDateString()}
-                
-              
+              <tr key={document.id}>
+                <td>{document.title}</td>
+                <td>{document.description}</td>
+                <td>{document.type}</td>
+                <td>{new Date(document.created_at).toLocaleDateString()}</td>
+              </tr>
             ))}
-          
-        
-      
+          </tbody>
+        </table>
+      </div>
     </>
   )
 }

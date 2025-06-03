@@ -45,13 +45,14 @@ export default function DocumentUpload({
   const [loadingStorage, setLoadingStorage] = useState(true)
 
   // State for AI processing retry
-  const [aiProcessingError, setAiProcessingError] = useState<string | null>(null)
-  const [showAiRetryButton, setShowAiRetryButton] = useState(false)
-    filePath: string
-    bucketName: string
-    fileName: string // Original filename from client side
-    dbDocumentId: string // ID of the record in 'documents' table
-  } | null>(null)
+  const [aiProcessingError, setAiProcessingError] = useState<string | null>(null);
+  const [showAiRetryButton, setShowAiRetryButton] = useState(false);
+  const [lastUploadedDocumentInfo, setLastUploadedDocumentInfo] = useState<{
+    filePath: string;
+    bucketName: string;
+    fileName: string; // Original filename from client side
+    dbDocumentId: string; // ID of the record in 'documents' table
+  } | null>(null);
 
   // Ref for session status and AbortController
   const sessionLostDuringOperationRef = React.useRef(false)

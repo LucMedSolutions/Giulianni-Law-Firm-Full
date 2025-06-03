@@ -26,7 +26,7 @@ This repository contains the integrated frontend and backend for the Giulianni L
     -   Python (v3.9+)
     -   Crew AI (for AI agent orchestration)
     -   Langchain (for LLM interactions)
-    -   OpenAI (as the primary LLM provider, with Gemini as an optional future integration)
+    -   Google Gemini (as the primary LLM provider)
     -   Uvicorn (ASGI server)
 
 ## Project Structure
@@ -48,7 +48,7 @@ This repository contains the integrated frontend and backend for the Giulianni L
 -   Node.js (v18 or later recommended) and `pnpm` (or `npm`/`yarn`).
 -   Python (v3.9 or later recommended) and `pip`.
 -   Supabase account for database, authentication, and storage.
--   OpenAI API key for AI agent functionality.
+-   Google API key (specifically `GOOGLE_API_KEY`) for AI agent functionality using Gemini.
 
 ## Environment Variables
 
@@ -81,17 +81,17 @@ Proper configuration of environment variables is crucial for the application to 
     cp backend/.env.example backend/.env
     ```
 3.  Edit `backend/.env` and fill in the following variables:
-    *   `OPENAI_API_KEY`: Your OpenAI API key, required for AI agent functionality.
+    *   `GOOGLE_API_KEY`: Your Google API key (often referred to as "API key" or "Generative Language API key" in Google Cloud Console or AI Studio) for Gemini LLM functionality. This is required for the AI agents.
     *   `SUPABASE_URL`: Your Supabase project URL (can be the same as `NEXT_PUBLIC_SUPABASE_URL`). Used by the backend for its Supabase client.
     *   `SUPABASE_SERVICE_KEY`: Your Supabase project service role key. **This key has admin privileges and must be kept secret.** It's used by the backend for privileged operations (e.g., `status.py`, `crew_runner.py`).
     *   `ALLOWED_ORIGINS`: A comma-separated list of frontend URLs allowed for CORS.
         *   Example: `http://localhost:3000,https://your-production-frontend.com`
-    *   `OPENAI_DEFAULT_MODEL`: (Optional, defaults to "gpt-4o" in code) The default OpenAI model name to be used by Crew AI agents.
-        *   Example: `gpt-4o` or `gpt-3.5-turbo`.
+    *   `GOOGLE_DEFAULT_MODEL`: (Optional, defaults to "gemini-pro" in code) The default Google Gemini model name to be used by Crew AI agents.
+        *   Example: `gemini-pro`.
     *   `SUPABASE_GENERATED_DOCUMENTS_BUCKET`: (Optional, defaults to "generated_documents" in code) The Supabase Storage bucket name where AI-generated documents are stored.
         *   Example: `generated_documents`
 
-    The `GEMINI_API_KEY` and `PYTHONPATH` variables mentioned previously in some examples are optional and depend on specific setup needs.
+    The `PYTHONPATH` variable mentioned previously in some examples is optional and depends on specific setup needs. `GOOGLE_API_KEY` is the primary key for LLM access.
 
 ## Supabase Storage Security and Validation
 
@@ -374,11 +374,11 @@ To test the end-to-end AI document processing workflow:
 1.  **Servers Running:** Ensure both the backend (`uvicorn main:app --reload --port 8000` in `backend/`) and frontend (`pnpm dev` in the project root) servers are running.
 2.  **Environment Variables:** Verify that:
     *   `frontend/.env.local` has `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` correctly set.
-    *   `backend/.env` has `OPENAI_API_KEY` correctly set.
+    *   `backend/.env` has `GOOGLE_API_KEY` correctly set.
 3.  **Login:** Access the frontend application (usually `http://localhost:3000`) and log in.
 4.  **Navigate:** Go to the document upload page (e.g., Client Dashboard > Documents > Upload).
 5.  **Upload:** Select a test document (e.g., a text file, PDF) and optionally add a user query/note in the provided field. Click "Upload Document".
-6.  **Backend Logs:** Observe the terminal running the backend server. You should see logs indicating the start of AI processing by `LawFirmCrewRunner`. If an OpenAI API key is configured, you'll see logs from CrewAI about agent execution. If not, mock processing logs will appear.
+6.  **Backend Logs:** Observe the terminal running the backend server. You should see logs indicating the start of AI processing by `LawFirmCrewRunner`. If a `GOOGLE_API_KEY` is configured, you'll see logs from CrewAI about agent execution using Gemini. If not, mock processing logs will appear.
 7.  **Task Status Page:** You should be redirected to the task status page (e.g., `/client-dashboard/tasks/[task_id]`).
 8.  **Observe Status:** The page will poll for status updates. You should see the status change (e.g., from 'pending' to 'in_progress', then to 'completed' or 'error').
 9.  **View Results:** Upon 'completed' status, the AI-generated results (such as a document summary and a list of defined tasks) will be displayed on the page. If 'error', error details will be shown.
@@ -402,7 +402,7 @@ To test the end-to-end AI document processing workflow:
 ### Backend (e.g., Railway, AWS)
 
 -   The FastAPI backend can be deployed to various platforms supporting Python applications, such as Railway, AWS (Elastic Beanstalk, ECS, Lambda with Mangum), Google Cloud Run, Heroku, etc.
--   You will need to set the `OPENAI_API_KEY` (and any other backend environment variables like `GEMINI_API_KEY` if used) on your chosen deployment platform.
+-   You will need to set the `GOOGLE_API_KEY` (and `GOOGLE_DEFAULT_MODEL` if you wish to override the default) on your chosen deployment platform.
 -   Ensure your deployment process installs dependencies from `backend/requirements.txt`. This is typically done via a `pip install -r requirements.txt` command during the build process.
 -   Consider containerizing the backend with Docker for easier deployment, scalability, and environment consistency. (A `Dockerfile` is not yet provided but would be a good addition for production deployments).
 -   You will need an ASGI server like Uvicorn (with Gunicorn as a process manager in production) to run the FastAPI application. The command would be similar to `gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$PORT`.

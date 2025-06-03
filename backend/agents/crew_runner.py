@@ -16,7 +16,7 @@ import pypdf
 import docx # python-docx library
 
 from crewai import Agent, Task, Crew, Process # Core Crew AI components
-from langchain_openai import ChatOpenAI # Specific LLM implementation from Langchain
+from langchain_google_genai import ChatGoogleGenerativeAI # Specific LLM implementation from Langchain
 from langchain.tools import tool # For creating tools from functions
 
 # Local imports for status tracking
@@ -138,25 +138,25 @@ class LawFirmCrewRunner:
         self.main_task_id = task_id  # Stores the overall task_id for the entire crew run.
         self.llm = None # Will hold the LLM instance if successfully initialized.
 
-        # Attempt to load OpenAI API key and initialize the LLM.
+        # Attempt to load Google API key and initialize the LLM.
         # This is crucial for the agents to perform their tasks using real AI capabilities.
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if openai_api_key:
-            logger.info("OpenAI API key found. Initializing LLM.")
+        google_api_key = os.getenv("GOOGLE_API_KEY")
+        if google_api_key:
+            logger.info("Google API key found. Initializing LLM.")
             try:
-                # Initialize ChatOpenAI with specific parameters.
+                # Initialize ChatGoogleGenerativeAI with specific parameters.
                 # Model name is configurable via environment variable.
                 # Temperature is set to 0.2 for more deterministic and less "creative" outputs.
-                default_model = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4o")
-                logger.info(f"Using OpenAI model: {default_model}")
-                self.llm = ChatOpenAI(api_key=openai_api_key, temperature=0.2, model_name=default_model)
+                default_model = os.getenv("GOOGLE_DEFAULT_MODEL", "gemini-pro") # Changed from OPENAI_DEFAULT_MODEL and gpt-4o
+                logger.info(f"Using Google Gemini model: {default_model}") # Changed log message
+                self.llm = ChatGoogleGenerativeAI(google_api_key=google_api_key, temperature=0.2, model=default_model) # Changed to ChatGoogleGenerativeAI and model parameter
             except Exception as e:
                 # If LLM initialization fails, log the error and ensure self.llm is None.
-                logger.error(f"Error initializing OpenAI LLM: {e}. Real LLM capabilities will be disabled.")
+                logger.error(f"Error initializing Google Gemini LLM: {e}. Real LLM capabilities will be disabled.") # Changed log message
                 self.llm = None
         else:
             # If the API key is not found, AI capabilities are disabled, and mock responses will be used.
-            logger.warning("OPENAI_API_KEY not found. Real LLM capabilities will be disabled. Using mock responses.")
+            logger.warning("GOOGLE_API_KEY not found. Real LLM capabilities will be disabled. Using mock responses.") # Changed log message
 
         # Common arguments for agent initialization.
         # 'verbose': True enables detailed logging from the agents.
@@ -785,8 +785,8 @@ if __name__ == '__main__':
     # they can be converted to use the same logger. Let's convert them.
     logger.info("--- Crew Runner Direct Test ---")
     
-    # Ensure OPENAI_API_KEY is set in your environment for LLM-powered execution
-    # Example: export OPENAI_API_KEY="your_key_here"
+    # Ensure GOOGLE_API_KEY is set in your environment for LLM-powered execution
+    # Example: export GOOGLE_API_KEY="your_key_here"
     
     runner = get_crew_runner_instance()
     
@@ -849,7 +849,7 @@ if __name__ == '__main__':
     logger.info("--- Crew Runner Document Drafting Test ---")
 
     # Ensure SUPABASE_URL and SUPABASE_SERVICE_KEY are set for storage/DB operations.
-    # Also OPENAI_API_KEY for the LLM.
+    # Also GOOGLE_API_KEY for the LLM.
     if runner.llm and runner.supabase_client:
         draft_task_id = str(uuid.uuid4())
         sample_case_id = "CASE-001"

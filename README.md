@@ -48,7 +48,31 @@ This repository contains the integrated frontend and backend for the Giulianni L
 -   Node.js (v18 or later recommended) and `pnpm` (or `npm`/`yarn`).
 -   Python (v3.9 or later recommended) and `pip`.
 -   Supabase account for database, authentication, and storage.
--   Google API key (specifically `GOOGLE_API_KEY`) for AI agent functionality using Gemini.
+-   Google API Key for AI agent functionality using Gemini (see "API Key Configuration" section below).
+
+## API Key Configuration
+
+The backend requires a Google API key for interacting with the Gemini LLM. This key is managed via a JSON configuration file.
+
+1.  **Create the Configuration File:**
+    In the root directory of the project, create a directory named `config`. Inside this directory, create a file named `api-keys.json`.
+
+2.  **Add API Key:**
+    Open `config/api-keys.json` and add your Google API key in the following JSON format:
+
+    ```json
+    {
+      "google": {
+        "apiKey": "YOUR_GOOGLE_API_KEY_HERE"
+      }
+    }
+    ```
+    Replace `"YOUR_GOOGLE_API_KEY_HERE"` with your actual Google API key.
+
+3.  **Security Note:**
+    The `config/api-keys.json` file is included in the project's `.gitignore` file and **should not be committed to version control**. This is crucial to keep your API key secret.
+
+    For local development, the backend will load the API key from this file. For deployed environments, you will typically set the `GOOGLE_API_KEY` environment variable directly on your hosting platform (see "Deployment" section). The application is configured to use the JSON file first, and fall back to the `GOOGLE_API_KEY` environment variable if the file or key within it is not found.
 
 ## Environment Variables
 
@@ -81,17 +105,17 @@ Proper configuration of environment variables is crucial for the application to 
     cp backend/.env.example backend/.env
     ```
 3.  Edit `backend/.env` and fill in the following variables:
-    *   `GOOGLE_API_KEY`: Your Google API key (often referred to as "API key" or "Generative Language API key" in Google Cloud Console or AI Studio) for Gemini LLM functionality. This is required for the AI agents.
     *   `SUPABASE_URL`: Your Supabase project URL (can be the same as `NEXT_PUBLIC_SUPABASE_URL`). Used by the backend for its Supabase client.
     *   `SUPABASE_SERVICE_KEY`: Your Supabase project service role key. **This key has admin privileges and must be kept secret.** It's used by the backend for privileged operations (e.g., `status.py`, `crew_runner.py`).
     *   `ALLOWED_ORIGINS`: A comma-separated list of frontend URLs allowed for CORS.
         *   Example: `http://localhost:3000,https://your-production-frontend.com`
-    *   `GOOGLE_DEFAULT_MODEL`: (Optional, defaults to "gemini-pro" in code) The default Google Gemini model name to be used by Crew AI agents.
+    *   `GOOGLE_DEFAULT_MODEL`: (Optional, defaults to "gemini-pro" in code) The default Google Gemini model name to be used by Crew AI agents. You might still need to set `GOOGLE_API_KEY` as an environment variable in deployed environments if the `config/api-keys.json` file is not used there.
         *   Example: `gemini-pro`.
     *   `SUPABASE_GENERATED_DOCUMENTS_BUCKET`: (Optional, defaults to "generated_documents" in code) The Supabase Storage bucket name where AI-generated documents are stored.
         *   Example: `generated_documents`
+    *   `GOOGLE_API_KEY`: (Optional Fallback/Deployment) While local development primarily uses `config/api-keys.json`, this environment variable can serve as a fallback or for deployed environments where managing JSON files is less convenient. If `config/api-keys.json` is not found or doesn't contain the key, the system will check for this environment variable.
 
-    The `PYTHONPATH` variable mentioned previously in some examples is optional and depends on specific setup needs. `GOOGLE_API_KEY` is the primary key for LLM access.
+    The `PYTHONPATH` variable mentioned previously in some examples is optional and depends on specific setup needs.
 
 ## Supabase Storage Security and Validation
 
@@ -372,9 +396,10 @@ The core AI-driven document analysis follows these steps:
 To test the end-to-end AI document processing workflow:
 
 1.  **Servers Running:** Ensure both the backend (`uvicorn main:app --reload --port 8000` in `backend/`) and frontend (`pnpm dev` in the project root) servers are running.
-2.  **Environment Variables:** Verify that:
+2.  **API Key and Environment Variables:** Verify that:
+    *   `config/api-keys.json` is created and contains your Google API key as described in the "API Key Configuration" section.
     *   `frontend/.env.local` has `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` correctly set.
-    *   `backend/.env` has `GOOGLE_API_KEY` correctly set.
+    *   `backend/.env` is configured (though `GOOGLE_API_KEY` in this file is now a fallback).
 3.  **Login:** Access the frontend application (usually `http://localhost:3000`) and log in.
 4.  **Navigate:** Go to the document upload page (e.g., Client Dashboard > Documents > Upload).
 5.  **Upload:** Select a test document (e.g., a text file, PDF) and optionally add a user query/note in the provided field. Click "Upload Document".
@@ -406,6 +431,49 @@ To test the end-to-end AI document processing workflow:
 -   Ensure your deployment process installs dependencies from `backend/requirements.txt`. This is typically done via a `pip install -r requirements.txt` command during the build process.
 -   Consider containerizing the backend with Docker for easier deployment, scalability, and environment consistency. (A `Dockerfile` is not yet provided but would be a good addition for production deployments).
 -   You will need an ASGI server like Uvicorn (with Gunicorn as a process manager in production) to run the FastAPI application. The command would be similar to `gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$PORT`.
+
+## Deployment to Vercel
+
+This project is configured for deployment to Vercel, which can host both the Next.js frontend and the FastAPI backend.
+
+### Prerequisites
+
+*   A Vercel account.
+*   Vercel CLI (optional, as deployments can be managed via Git integration).
+
+### Setup and Deployment Steps
+
+1.  **Connect Git Repository:**
+    *   Push your project to a Git repository (e.g., GitHub, GitLab, Bitbucket).
+    *   Connect this repository to your Vercel account. Vercel will usually automatically detect it as a Next.js project.
+
+2.  **`vercel.json` Configuration:**
+    *   A `vercel.json` file is included in the project root. This file tells Vercel how to build the Next.js frontend (outputting to the `.next` directory) and the Python backend (`backend/main.py`). It also configures routing:
+        *   Requests to `/api/*` are routed to the FastAPI backend.
+        *   All other requests are routed to the Next.js frontend.
+
+3.  **Configure Environment Variables:**
+    In your Vercel project settings (under "Settings" > "Environment Variables"), add the following:
+    *   `GOOGLE_API_KEY`: Your Google API key for Gemini LLM. This is necessary because the `config/api-keys.json` file is not committed to version control.
+    *   `SUPABASE_URL`: Your Supabase project URL.
+    *   `SUPABASE_SERVICE_KEY`: Your Supabase project service role key.
+    *   `ALLOWED_ORIGINS`: The production URL of your Vercel frontend (e.g., `https://your-project-name.vercel.app`). You can add other domains if needed, separated by commas.
+    *   `GOOGLE_DEFAULT_MODEL`: (Optional) If you want to use a specific Gemini model different from the default (`gemini-pro`), set it here.
+    *   `PYTHONPATH`: Set this to `backend` to ensure Python can correctly import modules within the `backend` directory on Vercel's build environment. Vercel might require this for the Python runtime to find your backend modules. (e.g., Value: `backend`)
+    *   `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase project URL (same as `SUPABASE_URL`).
+    *   `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Your Supabase project anonymous public key.
+    *   `NEXT_PUBLIC_BACKEND_API_URL`: This should be the URL where your Vercel-deployed backend will be available. Since both frontend and backend are on the same Vercel deployment, this will be your main Vercel project URL (e.g., `https://your-project-name.vercel.app`). Vercel handles the routing to `/api/*` internally.
+
+4.  **Trigger Deployment:**
+    *   Commit and push your changes (including `vercel.json`) to your connected Git repository.
+    *   Vercel should automatically start a new deployment. You can also manually trigger deployments from the Vercel dashboard.
+
+5.  **Check Build Logs:**
+    *   Monitor the build and deployment logs in your Vercel dashboard for any errors. Address them as needed. Common issues can relate to missing dependencies, incorrect environment variable settings, or build command failures.
+
+### Notes
+*   The `@vercel/python` builder installs dependencies from `backend/requirements.txt` for the FastAPI application.
+*   The `@vercel/next` builder handles the Next.js frontend build.
 
 ## Contributing
 

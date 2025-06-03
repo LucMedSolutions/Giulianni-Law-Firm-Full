@@ -138,25 +138,55 @@ class LawFirmCrewRunner:
         self.main_task_id = task_id  # Stores the overall task_id for the entire crew run.
         self.llm = None # Will hold the LLM instance if successfully initialized.
 
-        # Attempt to load Google API key and initialize the LLM.
-        # This is crucial for the agents to perform their tasks using real AI capabilities.
-        google_api_key = os.getenv("GOOGLE_API_KEY")
+        # Attempt to load Google API key from config file and initialize the LLM.
+        google_api_key = None
+        try:
+            # Construct path to api-keys.json relative to this file's location
+            # backend/agents/crew_runner.py -> ../../config/api-keys.json
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.join(current_dir, '..', '..', 'config', 'api-keys.json')
+
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    api_keys_config = json.load(f)
+                google_api_key = api_keys_config.get("google", {}).get("apiKey")
+                if not google_api_key or google_api_key == "YOUR_GOOGLE_API_KEY_HERE":
+                    logger.warning(f"Google API key not found or is a placeholder in {config_path}. Real LLM capabilities will be disabled.")
+                    google_api_key = None # Ensure it's None if placeholder or missing
+                else:
+                    logger.info(f"Google API key successfully loaded from {config_path}.")
+            else:
+                logger.warning(f"API key config file not found at {config_path}. Real LLM capabilities will be disabled. Attempting to use GOOGLE_API_KEY environment variable as a fallback.")
+                # Fallback to environment variable if config file not found
+                google_api_key = os.getenv("GOOGLE_API_KEY")
+                if google_api_key:
+                    logger.info("Google API key found in environment variable (GOOGLE_API_KEY).")
+                else:
+                    logger.warning("GOOGLE_API_KEY environment variable not found either. Real LLM capabilities will be disabled.")
+
+        except FileNotFoundError:
+            logger.warning(f"API key config file not found at expected path. Real LLM capabilities will be disabled. Ensure {config_path} exists or set GOOGLE_API_KEY environment variable.")
+        except json.JSONDecodeError:
+            logger.error(f"Error decoding JSON from API key config file at {config_path}. Real LLM capabilities will be disabled.")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while loading Google API key from config: {e}. Real LLM capabilities will be disabled.")
+
         if google_api_key:
-            logger.info("Google API key found. Initializing LLM.")
+            logger.info("Google API key available. Initializing LLM.")
             try:
                 # Initialize ChatGoogleGenerativeAI with specific parameters.
                 # Model name is configurable via environment variable.
                 # Temperature is set to 0.2 for more deterministic and less "creative" outputs.
-                default_model = os.getenv("GOOGLE_DEFAULT_MODEL", "gemini-pro") # Changed from OPENAI_DEFAULT_MODEL and gpt-4o
-                logger.info(f"Using Google Gemini model: {default_model}") # Changed log message
-                self.llm = ChatGoogleGenerativeAI(google_api_key=google_api_key, temperature=0.2, model=default_model) # Changed to ChatGoogleGenerativeAI and model parameter
+                default_model = os.getenv("GOOGLE_DEFAULT_MODEL", "gemini-pro")
+                logger.info(f"Using Google Gemini model: {default_model}")
+                self.llm = ChatGoogleGenerativeAI(google_api_key=google_api_key, temperature=0.2, model=default_model)
             except Exception as e:
                 # If LLM initialization fails, log the error and ensure self.llm is None.
-                logger.error(f"Error initializing Google Gemini LLM: {e}. Real LLM capabilities will be disabled.") # Changed log message
+                logger.error(f"Error initializing Google Gemini LLM: {e}. Real LLM capabilities will be disabled.")
                 self.llm = None
         else:
-            # If the API key is not found, AI capabilities are disabled, and mock responses will be used.
-            logger.warning("GOOGLE_API_KEY not found. Real LLM capabilities will be disabled. Using mock responses.") # Changed log message
+            # If the API key is not found or loading failed, AI capabilities are disabled, and mock responses will be used.
+            logger.warning("Google API key not available after checking config file and environment. Real LLM capabilities will be disabled. Using mock responses.")
 
         # Common arguments for agent initialization.
         # 'verbose': True enables detailed logging from the agents.

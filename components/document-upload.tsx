@@ -12,29 +12,30 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Upload, FileText, AlertCircle, CheckCircle, Database, ExternalLink } from "lucide-react"
 
-interface Case {
-  id: string
-  case_number: string
-  client_name: string | null // Ensure this is fetched for staff/admin if needed for display
-  case_type: string
-  // Potentially other fields depending on what's needed for display or logic
-}
+// ... other code above remains unchanged
 
-interface DocumentUploadProps {
-  userId: string // Required: ID of the user performing the upload
-  userRole: "client" | "staff" | "admin" // Required: Role of the user
-  caseId?: string // Optional: Pre-select case or hide selector
-  // Updated onUploadComplete to pass an object that can include AI processing results
-  onUploadComplete?: (uploadResult: { dbDocument: any; aiTaskId?: string; aiError?: string }) => void
-}
+const [file, setFile] = useState<File | null>(null)
+const [selectedCaseId, setSelectedCaseId] = useState<string>(caseId || "")
+const [cases, setCases] = useState<Case[]>([])
+const [uploading, setUploading] = useState(false)
+const [processingAICall, setProcessingAICall] = useState(false)
+const [message, setMessage] = useState<{ type: "success" | "error" | "warning"; text: string } | null>(null)
+const [availableBuckets, setAvailableBuckets] = useState<string[]>([])
+const [loadingCases, setLoadingCases] = useState(true)
+const [loadingStorage, setLoadingStorage] = useState(true)
+const [aiProcessingError, setAiProcessingError] = useState<string | null>(null)
+const [showAiRetryButton, setShowAiRetryButton] = useState(false)
 
-export default function DocumentUpload({
-  userId,
-  userRole,
-  caseId,
-  onUploadComplete,
-}: DocumentUploadProps) {
-  const [file, setFile] = useState<File | null>(null)
+const [lastUploadedDocumentInfo, setLastUploadedDocumentInfo] = useState<{
+  filePath: string;
+  bucketName: string;
+  fileName: string;
+  dbDocumentId: string;
+} | null>(null)
+
+const sessionLostDuringOperationRef = React.useRef(false)
+const aiCallAbortControllerRef = React.useRef<AbortController | null>(null)
+
   const [selectedCaseId, setSelectedCaseId] = useState<string>(caseId || "")
   const [cases, setCases] = useState<Case[]>([])
   const [uploading, setUploading] = useState(false) // Covers file upload to Supabase Storage & DB insert

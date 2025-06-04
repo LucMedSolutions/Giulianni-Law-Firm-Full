@@ -1,5 +1,4 @@
-import { createClientComponentClient, createServerComponentClient } from "@supabase/auth-helpers-nextjs"
-import { cookies } from "next/headers"
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 
 // Define permission types
 export type Permission =
@@ -98,28 +97,6 @@ export async function hasPermission(permission: Permission): Promise<boolean> {
 
     const { data, error } = await supabase.rpc("user_has_permission", {
       user_id: session.session.user.id,
-      permission_name: permission,
-    })
-
-    if (error) {
-      console.error("Permission check error:", error)
-      return false
-    }
-
-    return data
-  } catch (error) {
-    console.error("Permission check error:", error)
-    return false
-  }
-}
-
-// Server-side permission check
-export async function hasPermissionServer(userId: string, permission: Permission): Promise<boolean> {
-  const supabase = createServerComponentClient({ cookies })
-
-  try {
-    const { data, error } = await supabase.rpc("user_has_permission", {
-      user_id: userId,
       permission_name: permission,
     })
 

@@ -1,5 +1,4 @@
-import { createClientComponentClient, createServerComponentClient } from "@supabase/auth-helpers-nextjs"
-import { cookies } from "next/headers"
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 
 export type AuditAction =
   | "login"
@@ -54,46 +53,6 @@ export async function logAuditEvent(entry: AuditLogEntry) {
       logEntry.ip_address = entry.ip_address
     } else {
       logEntry.ip_address = "client-side"
-    }
-
-    // Insert the log entry
-    const { error } = await supabase.from("audit_logs").insert(logEntry)
-
-    if (error) {
-      console.error("Error logging audit event:", error)
-    }
-  } catch (error) {
-    console.error("Failed to log audit event:", error)
-  }
-}
-
-// Server-side audit logging
-export async function logAuditEventServer(entry: AuditLogEntry) {
-  const supabase = createServerComponentClient({ cookies })
-
-  try {
-    // Create a base log entry with required fields
-    const logEntry: Record<string, any> = {
-      user_id: entry.user_id,
-      action: entry.action,
-      details: entry.details,
-      // Add a default document_id if not provided
-      document_id: entry.document_id || "00000000-0000-0000-0000-000000000000", // Default UUID
-    }
-
-    // Add optional fields if provided
-    if (entry.resource_type) {
-      logEntry.resource_type = entry.resource_type
-    }
-
-    if (entry.resource_id) {
-      logEntry.resource_id = entry.resource_id
-    }
-
-    if (entry.ip_address) {
-      logEntry.ip_address = entry.ip_address
-    } else {
-      logEntry.ip_address = "server-side"
     }
 
     // Insert the log entry

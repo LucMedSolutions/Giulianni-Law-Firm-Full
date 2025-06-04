@@ -148,13 +148,28 @@ export async function POST(request: Request) {
       console.warn(`[REGISTRATION_VALIDATION_FAIL] Operation: JSON Parsing | Details: ${error.message}`);
       return NextResponse.json({ error: "Invalid JSON payload" }, { status: 400 });
     }
-    console.error(`[REGISTRATION_UNHANDLED_ERROR] Details: ${error.message}`, error);
-    return NextResponse.json(
-      {
-        error: error.message || "An unexpected error occurred during registration.",
-        details: error.details || error.message, // provide more details if available
-      },
-      { status: (error.message && error.message.toLowerCase().includes('timeout')) ? 504 : 500 },
+
+    // Enhanced error logging for unhandled errors
+    console.error(
+      `[REGISTRATION_UNHANDLED_ERROR] Type: ${error?.constructor?.name} | Message: ${error?.message} | Stack: ${error?.stack}`
     );
+
+    // Determine status code (504 for timeout, 500 otherwise)
+    // This checks if the error message itself indicates a timeout.
+    // More specific timeout errors from `withTimeout` should be caught earlier.
+    const status = (error?.message && typeof error.message === 'string' && error.message.toLowerCase().includes('timeout')) ? 504 : 500;
+
+    const errorPayload = {
+      error: "An unexpected error occurred during registration.",
+      // Ensure detail is always a string and serializable
+      detail: (error?.message && typeof error.message === 'string') ? error.message : "No additional details available."
+    };
+
+    // Log the payload and status that will be sent
+    console.log(
+      `[REGISTRATION_UNHANDLED_ERROR_RESPONSE] Attempting to send error payload: ${JSON.stringify(errorPayload)} with status: ${status}`
+    );
+
+    return NextResponse.json(errorPayload, { status });
   }
 }

@@ -48,15 +48,6 @@ const aiCallAbortControllerRef = React.useRef<AbortController | null>(null)
   // State for AI processing retry
   const [aiProcessingError, setAiProcessingError] = useState<string | null>(null)
   const [showAiRetryButton, setShowAiRetryButton] = useState(false)
-    filePath: string
-    bucketName: string
-    fileName: string // Original filename from client side
-    dbDocumentId: string // ID of the record in 'documents' table
-  } | null>(null)
-
-  // Ref for session status and AbortController
-  const sessionLostDuringOperationRef = React.useRef(false)
-  const aiCallAbortControllerRef = React.useRef<AbortController | null>(null)
 
   const supabase = createClient()
 

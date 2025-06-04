@@ -132,10 +132,11 @@ export default function DatabasesPage() {
   const filteredCases = cases
     .filter((caseItem) => {
       const searchTermLower = searchTerm.toLowerCase()
+      // Ensure properties exist and are strings before calling toLowerCase
       return (
-        caseItem.title.toLowerCase().includes(searchTermLower) ||
-        caseItem.description.toLowerCase().includes(searchTermLower) ||
-        caseItem.status.toLowerCase().includes(searchTermLower)
+        (caseItem.title && caseItem.title.toLowerCase().includes(searchTermLower)) ||
+        (caseItem.description && caseItem.description.toLowerCase().includes(searchTermLower)) ||
+        (caseItem.status && caseItem.status.toLowerCase().includes(searchTermLower))
       )
     })
     .filter((caseItem) => {
@@ -146,16 +147,20 @@ export default function DatabasesPage() {
     })
     .sort((a, b) => {
       const order = sortOrder === "asc" ? 1 : -1
-      return a.title.localeCompare(b.title) * order
+      // Ensure title exists for sorting
+      const titleA = a.title || ""
+      const titleB = b.title || ""
+      return titleA.localeCompare(titleB) * order
     })
 
   const filteredDocuments = documents
     .filter((document) => {
       const searchTermLower = searchTerm.toLowerCase()
+      // Ensure properties exist and are strings before calling toLowerCase
       return (
-        document.title.toLowerCase().includes(searchTermLower) ||
-        document.description.toLowerCase().includes(searchTermLower) ||
-        document.type.toLowerCase().includes(searchTermLower)
+        (document.title && document.title.toLowerCase().includes(searchTermLower)) ||
+        (document.description && document.description.toLowerCase().includes(searchTermLower)) ||
+        (document.type && document.type.toLowerCase().includes(searchTermLower))
       )
     })
     .filter((document) => {
@@ -166,104 +171,161 @@ export default function DatabasesPage() {
     })
     .sort((a, b) => {
       const order = sortOrder === "asc" ? 1 : -1
-      return a.title.localeCompare(b.title) * order
+      // Ensure title exists for sorting
+      const titleA = a.title || ""
+      const titleB = b.title || ""
+      return titleA.localeCompare(titleB) * order
     })
 
   return (
-    <>
-      
-        
-          
-            
-              Search:
-              
-            
-            
-              Case Status:
-              
-                All
-                Open
-                Closed
-                Pending
-              
-            
-            
-              Document Type:
-              
-                All
-                PDF
-                Word
-                Excel
-              
-            
-            
-              Sort Order:
-              
-                Ascending
-                Descending
-              
-            
-          
-        
+    <div className="container mx-auto p-4">
+      <h1 className="text-2xl font-bold mb-4">Databases Dashboard</h1>
 
-        
-          
-            
-              
-                Title
-                Description
-                Status
-                Created At
-              
-            
-            {filteredCases.map((caseItem) => (
-              
-                \
-                  {caseItem.title}
-                
-                
-                  {caseItem.description}
-                
-                
-                  {caseItem.status}
-                
-                
-                  {new Date(caseItem.created_at).toLocaleDateString()}
-                
-              
-            ))}
-          
-        
+      {loading && <p>Loading data...</p>}
+      {error && <p className="text-red-500">Error: {error}</p>}
 
-        
-          
-            
-              
-                Title
-                Description
-                Type
-                Created At
-              
-            
-            {filteredDocuments.map((document) => (
-              
-                
-                  {document.title}
-                
-                
-                  {document.description}
-                
-                
-                  {document.type}
-                
-                
-                  {new Date(document.created_at).toLocaleDateString()}
-                
-              
-            ))}
-          
-        
-      
-    </>
-  )
+      {!loading && !error && (
+        <>
+          {/* Filter Section */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 p-4 border rounded shadow-sm">
+            <div>
+              <label htmlFor="search" className="block text-sm font-medium text-gray-700 mb-1">
+                Search:
+              </label>
+              <input
+                type="text"
+                id="search"
+                value={searchTerm}
+                onChange={handleSearch}
+                placeholder="Search cases and documents..."
+                className="w-full p-2 border rounded"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="caseStatusFilter" className="block text-sm font-medium text-gray-700 mb-1">
+                Case Status:
+              </label>
+              <select
+                id="caseStatusFilter"
+                value={caseFilter}
+                onChange={(e) => handleCaseFilterChange(e.target.value)}
+                className="w-full p-2 border rounded"
+              >
+                <option value="all">All</option>
+                <option value="Open">Open</option>
+                <option value="Closed">Closed</option>
+                <option value="Pending">Pending</option>
+                {/* Add other statuses from your data if necessary */}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="documentTypeFilter" className="block text-sm font-medium text-gray-700 mb-1">
+                Document Type:
+              </label>
+              <select
+                id="documentTypeFilter"
+                value={documentFilter}
+                onChange={(e) => handleDocumentFilterChange(e.target.value)}
+                className="w-full p-2 border rounded"
+              >
+                <option value="all">All</option>
+                <option value="PDF">PDF</option>
+                <option value="Word">Word</option>
+                <option value="Excel">Excel</option>
+                {/* Add other document types from your data if necessary */}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="sortOrder" className="block text-sm font-medium text-gray-700 mb-1">
+                Sort Order (by Title):
+              </label>
+              <button
+                onClick={handleSortOrderChange}
+                className="w-full p-2 border rounded bg-gray-200 hover:bg-gray-300"
+              >
+                {sortOrder === "asc" ? "Ascending" : "Descending"}
+              </button>
+            </div>
+          </div>
+
+          {/* Cases Table */}
+          <div className="mb-8">
+            <h2 className="text-xl font-semibold mb-3">Cases ({filteredCases.length})</h2>
+            <div className="overflow-x-auto border rounded shadow-sm">
+              <table className="min-w-full bg-white">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-sm font-semibold text-gray-600">Title</th>
+                    <th className="px-4 py-2 text-left text-sm font-semibold text-gray-600">Description</th>
+                    <th className="px-4 py-2 text-left text-sm font-semibold text-gray-600">Status</th>
+                    <th className="px-4 py-2 text-left text-sm font-semibold text-gray-600">Created At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredCases.length > 0 ? (
+                    filteredCases.map((caseItem) => (
+                      <tr key={caseItem.id} className="hover:bg-gray-50 border-b">
+                        <td className="px-4 py-2 whitespace-nowrap">{caseItem.title}</td>
+                        <td className="px-4 py-2">{caseItem.description}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">{caseItem.status}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">
+                          {new Date(caseItem.created_at).toLocaleDateString()}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} className="text-center py-4">
+                        No cases found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Documents Table */}
+          <div>
+            <h2 className="text-xl font-semibold mb-3">Documents ({filteredDocuments.length})</h2>
+            <div className="overflow-x-auto border rounded shadow-sm">
+              <table className="min-w-full bg-white">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-sm font-semibold text-gray-600">Title</th>
+                    <th className="px-4 py-2 text-left text-sm font-semibold text-gray-600">Description</th>
+                    <th className="px-4 py-2 text-left text-sm font-semibold text-gray-600">Type</th>
+                    <th className="px-4 py-2 text-left text-sm font-semibold text-gray-600">Created At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredDocuments.length > 0 ? (
+                    filteredDocuments.map((document) => (
+                      <tr key={document.id} className="hover:bg-gray-50 border-b">
+                        <td className="px-4 py-2 whitespace-nowrap">{document.title}</td>
+                        <td className="px-4 py-2">{document.description}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">{document.type}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">
+                          {new Date(document.created_at).toLocaleDateString()}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} className="text-center py-4">
+                        No documents found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }

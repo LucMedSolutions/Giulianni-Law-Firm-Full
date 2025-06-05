@@ -281,6 +281,7 @@ export default function NewCasePage() {
     setSuccess(false)
 
     try {
+      console.log("Current user for case creation:", currentUser);
       // Ensure currentUser and currentUser.id are available
       if (!currentUser || !currentUser.id) {
         setError("User information not available. Please refresh and try again.");

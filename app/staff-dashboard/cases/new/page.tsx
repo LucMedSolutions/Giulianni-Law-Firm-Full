@@ -281,6 +281,13 @@ export default function NewCasePage() {
     setSuccess(false)
 
     try {
+      // Ensure currentUser and currentUser.id are available
+      if (!currentUser || !currentUser.id) {
+        setError("User information not available. Please refresh and try again.");
+        setLoading(false);
+        return;
+      }
+
       // Validate form
       if (!caseNumber || !caseType || !status) {
         throw new Error("Please fill in all required fields")
@@ -292,6 +299,7 @@ export default function NewCasePage() {
 
       // Create the case
       const caseData: any = {
+        user_id: currentUser.id, // Add user_id from current user
         case_number: caseNumber,
         client_name: clientName,
         case_type: caseType,

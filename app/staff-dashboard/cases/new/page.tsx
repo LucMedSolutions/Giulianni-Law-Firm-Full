@@ -300,25 +300,34 @@ export default function NewCasePage() {
 
       // Create the case
       const caseData: any = {
-        user_id: currentUser.id, // Add user_id from current user
+        // user_id: currentUser.id, // REMOVED - This was the suspected cause of RLS violation
         case_number: caseNumber,
-        client_name: clientName,
+        client_name: clientName, // Retains manually typed name, may be overwritten by selected client
         case_type: caseType,
         status,
         assigned_to: assignedTo || null,
-      }
+      };
 
-      // Only set client_id if it's a real database client (not a manual fallback)
-      const selectedClient = clients.find((c) => c.id === clientId)
+      const selectedClient = clients.find((c) => c.id === clientId);
+
       if (clientId && selectedClient && !selectedClient.is_manual) {
-        caseData.client_id = clientId
+        // A specific client is selected from the database
+        caseData.user_id = clientId; // Use the selected client's ID for cases.user_id
+        if (selectedClient.full_name) {
+            caseData.client_name = selectedClient.full_name; // Ensure client_name is consistent
+        }
+      } else {
+        // No specific client selected from DB (e.g. manual name entry, or manual fallback client)
+        caseData.user_id = null; // Set cases.user_id to null
       }
-      // If it's a manual client, we'll just use the client_name without setting client_id
 
-      const { data, error } = await supabase.from("cases").insert([caseData]).select()
+      // Log the data being sent, for debugging RLS issues
+      console.log("Submitting caseData:", caseData);
+
+      const { data, error } = await supabase.from("cases").insert([caseData]).select();
 
       if (error) {
-        throw new Error(`Failed to create case: ${error.message}`)
+        throw new Error(`Failed to create case: ${error.message}`);
       }
 
       setSuccess(true)

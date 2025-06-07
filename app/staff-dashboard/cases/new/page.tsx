@@ -300,29 +300,31 @@ export default function NewCasePage() {
 
       // Create the case
       const caseData: any = {
-        // user_id: currentUser.id, // REMOVED - This was the suspected cause of RLS violation
+        // user_id: currentUser.id, // REMOVED - 'user_id' column reportedly does not exist.
         case_number: caseNumber,
-        client_name: clientName, // Retains manually typed name, may be overwritten by selected client
+        client_name: clientName, // Retains manually typed name, may be overwritten by selected client.
         case_type: caseType,
         status,
         assigned_to: assignedTo || null,
+        // client_id will be conditionally added below.
       };
 
       const selectedClient = clients.find((c) => c.id === clientId);
 
       if (clientId && selectedClient && !selectedClient.is_manual) {
-        // A specific client is selected from the database
-        caseData.user_id = clientId; // Use the selected client's ID for cases.user_id
+        // A specific client is selected from the database.
+        caseData.client_id = clientId; // Use the selected client's ID.
         if (selectedClient.full_name) {
-            caseData.client_name = selectedClient.full_name; // Ensure client_name is consistent
+            caseData.client_name = selectedClient.full_name; // Ensure client_name is consistent.
         }
       } else {
-        // No specific client selected from DB (e.g. manual name entry, or manual fallback client)
-        caseData.user_id = null; // Set cases.user_id to null
+        // No specific client selected from DB, or it's a manual entry/fallback.
+        // caseData.client_id remains unset. It should be nullable in the database.
+        // If client_name was manually typed, it will be used.
       }
 
-      // Log the data being sent, for debugging RLS issues
-      console.log("Submitting caseData:", caseData);
+      // Log the data being sent for debugging.
+      console.log("Submitting caseData (corrected for schema):", caseData);
 
       const { data, error } = await supabase.from("cases").insert([caseData]).select();
 

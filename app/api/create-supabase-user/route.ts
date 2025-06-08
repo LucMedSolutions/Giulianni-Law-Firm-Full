@@ -1,4 +1,4 @@
-port { createClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js'; // Corrected: 'import' not 'port'
 import { NextResponse } from 'next/server';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -57,6 +57,6 @@ export async function POST(request: Request) {
 
   } catch (generalError: any) {
     console.error('API route general error:', generalError.message);
-    return NextResponse.json({ error: generalError.message || 'An unexpected error occurred.' }, { status: 500 });
+    return NextResponse.json({ error: error.message || 'An unexpected error occurred.' }, { status: 500 });
   }
 }

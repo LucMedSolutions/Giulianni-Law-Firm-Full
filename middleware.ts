@@ -24,14 +24,18 @@ export async function middleware(req: NextRequest) {
     }
 
     // --- IMPORTANT NOTE ---
-    // The role-checking logic below will need to be updated later to use
-    // session.user.user_metadata.role once you log in with Supabase Auth users.
-    // It currently queries your custom 'users' table.
+    // The role-checking logic below (for /admin-dashboard, /staff-dashboard, /client-dashboard)
+    // currently uses `supabase.from("users").select("role")` which refers to your *custom* 'users' table.
+    // This will NOT work correctly with `session.user.id` from Supabase Auth once you log in
+    // with a Supabase Auth user, because the IDs will be different.
+    // After you create your staff user in Supabase Auth and update your login page
+    // to use `supabase.auth.signInWithPassword()`, you will need to change this logic
+    // to check roles from `session.user.user_metadata.role`.
 
     if (pathname.startsWith("/admin-dashboard")) {
       const { data: userData, error: userDbError } = await supabase.from("users").select("role").eq("id", session.user.id).single();
       if (userDbError || !userData || userData.role !== "admin") {
-        console.log("Redirecting from /admin-dashboard. User ID:", session.user.id, "Error:", userDbError);
+        console.log("Redirecting from /admin-dashboard due to role mismatch or data issue. User ID from session:", session.user.id, "Error:", userDbError);
         return NextResponse.redirect(new URL("/", req.url));
       }
     }
@@ -39,7 +43,7 @@ export async function middleware(req: NextRequest) {
     if (pathname.startsWith("/staff-dashboard")) {
       const { data: userData, error: userDbError } = await supabase.from("users").select("role").eq("id", session.user.id).single();
       if (userDbError || !userData || (userData.role !== "staff" && userData.role !== "admin")) {
-        console.log("Redirecting from /staff-dashboard. User ID:", session.user.id, "Error:", userDbError);
+        console.log("Redirecting from /staff-dashboard due to role mismatch or data issue. User ID from session:", session.user.id, "Error:", userDbError);
         return NextResponse.redirect(new URL("/", req.url));
       }
     }
@@ -47,7 +51,7 @@ export async function middleware(req: NextRequest) {
     if (pathname.startsWith("/client-dashboard")) {
       const { data: userData, error: userDbError } = await supabase.from("users").select("role").eq("id", session.user.id).single();
       if (userDbError || !userData || (userData.role !== "client" && userData.role !== "admin")) {
-        console.log("Redirecting from /client-dashboard. User ID:", session.user.id, "Error:", userDbError);
+        console.log("Redirecting from /client-dashboard due to role mismatch or data issue. User ID from session:", session.user.id, "Error:", userDbError);
         return NextResponse.redirect(new URL("/", req.url));
       }
     }
@@ -62,9 +66,3 @@ export async function middleware(req: NextRequest) {
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
-After updating middleware.ts with this code:
-
-Commit and push this change.
-Let Vercel redeploy.
-Try accessing /user-creation on your app's URL.
-Please let me know if the page loads this time, or if the code is still not visible in this message.

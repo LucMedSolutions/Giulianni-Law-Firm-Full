@@ -31,15 +31,16 @@ export async function POST(request: Request) {
       user_metadata: metadata || {},
     });
     if (error) {
-      console.error('Supabase admin createUser error:', error);
+      console.error('Supabase admin createUser error:', error.message);
       return NextResponse.json({ error: error.message || 'Failed to create user.' }, { status: 500 });
     }
     const safeUserResponse = { id: data.user?.id, email: data.user?.email };
     return NextResponse.json({ message: 'User created successfully', user: safeUserResponse }, { status: 200 });
   } catch (error: any) {
-    console.error('API route error:', error);
+    console.error('API route error:', error.message);
     if (error.name === 'SyntaxError') { 
         return NextResponse.json({ error: 'Invalid JSON payload.' }, { status: 400 });
     }
     return NextResponse.json({ error: error.message || 'An unexpected error occurred.' }, { status: 500 });
   }
+} // Ensure this brace closes the POST function

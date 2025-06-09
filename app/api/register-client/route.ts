@@ -1,78 +1,90 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
+// Use public anonymous key for client-side operations
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
 export async function POST(request: Request) {
   try {
     const { email, password, fullName } = await request.json()
 
     if (!email || !password || !fullName) {
-      return NextResponse.json({ error: "All fields are required" }, { status: 400 })
+      return NextResponse.json({ error: "Email, password, and full name are required" }, { status: 400 })
     }
 
-    // Create admin client for user creation
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    })
+    // Ensure environment variables are loaded
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("Supabase URL or Anon Key is not defined.")
+      return NextResponse.json({ error: "Server configuration error." }, { status: 500 })
+    }
 
-    // First, set the admin flag
-    await supabaseAdmin.rpc("set_admin_flag", { is_admin: true })
+    const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
-    // Create the auth user with confirmed email
-    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+    // Use standard supabase.auth.signUp()
+    // RLS policies on the 'users' table or database triggers on 'auth.users'
+    // should handle the creation of the public user profile.
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
       email,
       password,
-      email_confirm: true, // Auto-confirm email
-      user_metadata: {
-        full_name: fullName,
-        role: "client",
+      options: {
+        data: {
+          full_name: fullName,
+          // The role 'client' will be part of the user_metadata in the auth.users table.
+          // A trigger can then use this to populate the 'role' in the public.users table.
+          // Or RLS on public.users can allow insert if role is 'client' from metadata.
+          role: "client",
+        },
+        // Supabase typically sends a confirmation email by default.
+        // The user will need to confirm their email to log in,
+        // unless "Enable email confirmations" is disabled in your Supabase project settings.
       },
     })
 
-    if (authError) {
-      console.error("Auth user creation error:", authError)
-      throw authError
+    if (signUpError) {
+      console.error("Client registration sign-up error:", signUpError)
+      // Provide a more user-friendly error message for common issues
+      if (signUpError.message.includes("User already registered") || signUpError.message.includes("already exists")) {
+        return NextResponse.json({ error: "A user with this email already exists." }, { status: 409 }) // 409 Conflict
+      }
+      if (signUpError.message.includes("Password should be at least 6 characters")) {
+        return NextResponse.json({ error: "Password should be at least 6 characters." }, { status: 400 })
+      }
+      return NextResponse.json({ error: signUpError.message || "Failed to register user." }, { status: 500 })
     }
 
-    if (!authData.user) {
-      throw new Error("Failed to create auth user")
+    if (!signUpData.user) {
+      console.error("No user data returned from signUp but no error was thrown.")
+      return NextResponse.json({ error: "Failed to register user due to an unexpected issue." }, { status: 500 })
     }
 
-    // Create the user profile in the users table
-    const { error: profileError } = await supabaseAdmin.from("users").insert({
-      id: authData.user.id,
-      email: authData.user.email,
-      full_name: fullName,
-      role: "client",
-      created_at: new Date().toISOString(),
-      last_login: null,
-    })
+    // At this point, the user is created in auth.users.
+    // A confirmation email should have been sent by Supabase if email confirmations are enabled.
+    // The public.users table entry should be handled by RLS or a trigger.
 
-    if (profileError) {
-      console.error("Profile creation error:", profileError)
-      // If profile creation fails, clean up the auth user
-      await supabaseAdmin.auth.admin.deleteUser(authData.user.id)
-      throw profileError
+    let responseMessage = "Registration successful. "
+    if (signUpData.user.identities && signUpData.user.identities.length > 0 && !signUpData.user.email_confirmed_at) {
+      responseMessage += "Please check your email to confirm your registration."
+    } else if (signUpData.user.email_confirmed_at) {
+      responseMessage += "Your email is already confirmed. You can now log in."
+    } else {
+       // Fallback message if identities is unexpectedly empty but email not confirmed
+      responseMessage += "Please check your email to confirm your registration, if required by system."
     }
 
-    console.log(`Client registered successfully: ${email}`)
+    console.log(`Client registration initiated for: ${email}`)
 
     return NextResponse.json({
       success: true,
-      message: "Client registered successfully",
-      user: {
-        id: authData.user.id,
-        email: authData.user.email,
-        role: "client",
+      message: responseMessage,
+      user: { // Return minimal, non-sensitive user information
+        id: signUpData.user.id,
+        email: signUpData.user.email,
+        // Avoid returning full_name or role directly from here if it's meant to be confirmed/set by backend post-confirmation
       },
     })
   } catch (error: any) {
-    console.error("Registration error:", error)
+    console.error("Unexpected error during client registration:", error)
     return NextResponse.json(
       {
         error: error.message || "An unexpected error occurred during registration",

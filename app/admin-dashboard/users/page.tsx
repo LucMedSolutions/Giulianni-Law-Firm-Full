@@ -120,8 +120,8 @@ export default function UsersManagement() {
     setDeleteLoading(userId)
 
     try {
-      // Use a direct approach to delete the user and related records
-      const response = await fetch("/api/delete-user-direct", {
+      // Use the SQL-based direct approach for comprehensive deletion with audit logging
+      const response = await fetch("/api/delete-user-sql-direct", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

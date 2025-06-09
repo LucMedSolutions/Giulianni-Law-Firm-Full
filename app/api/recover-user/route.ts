@@ -42,27 +42,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ message: "User already exists in the system" })
     }
 
-    // Set the admin flag to allow insertion
-    try {
-      await supabaseAdmin.rpc("set_admin_flag", { is_admin: true })
-    } catch (rpcError) {
-      console.log("RPC call failed, proceeding with service role permissions:", rpcError)
-    }
+    // The supabaseAdmin client (using the service role key) should have
+    // sufficient privileges to insert into the 'users' table directly.
+    // The call to 'set_admin_flag' is unnecessary and potentially masks
+    // RLS issues if any were preventing direct insertion by the service role.
+    // If RLS is blocking the service role, that RLS policy needs review.
 
-    // Insert the user directly
+    // Insert the user profile directly
     const currentTime = new Date().toISOString()
     const { error: insertError } = await supabaseAdmin.from("users").insert({
-      id: userId,
+      id: userId, // This should be the ID from auth.users
       email: email,
       full_name: fullName,
       role: role,
       staff_role: role === "staff" ? staffRole : null,
-      created_at: currentTime,
-      last_login: currentTime,
+      created_at: currentTime, // Consider if this should be the auth user's created_at
+      last_login: currentTime, // Consider if this should be the auth user's last_sign_in_at
     })
 
     if (insertError) {
-      console.error("Insert error:", insertError)
+      console.error("Error inserting user profile:", insertError)
       return NextResponse.json({ error: insertError.message }, { status: 500 })
     }
 

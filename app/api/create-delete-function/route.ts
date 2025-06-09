@@ -1,3 +1,20 @@
+// =================================================================================
+// CRITICAL SETUP API - DO NOT DELETE UNLESS DATABASE MIGRATIONS HANDLE THIS FUNCTION
+// =================================================================================
+// This API route defines the SQL function `delete_user_with_related_records`.
+// This function is ESSENTIAL for the primary administrative user deletion functionality
+// provided by the `/api/delete-user-sql-direct` API endpoint.
+//
+// This route should be:
+// 1. Protected by admin-only middleware (as it currently is via `hasPermissionServer`).
+// 2. Retained to ensure the `delete_user_with_related_records` function can be
+//    created or updated as needed in environments where direct DB migrations are not used.
+//
+// If database migrations are adopted as the primary way to manage DB schema & functions,
+// the SQL function definition within this route should be moved to a migration file,
+// and this API endpoint could then potentially be deprecated.
+// =================================================================================
+
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs"
 import { cookies } from "next/headers"
 import { NextResponse } from "next/server"

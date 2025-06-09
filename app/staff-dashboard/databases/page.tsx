@@ -5,6 +5,11 @@ import type React from "react"
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Button } from "@/components/ui/button"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
 export default function DatabasesPage() {
   const [userData, setUserData] = useState<any | null>(null)
@@ -170,100 +175,120 @@ export default function DatabasesPage() {
     })
 
   return (
-    <>
-      
-        
-          
-            
-              Search:
-              
-            
-            
-              Case Status:
-              
-                All
-                Open
-                Closed
-                Pending
-              
-            
-            
-              Document Type:
-              
-                All
-                PDF
-                Word
-                Excel
-              
-            
-            
-              Sort Order:
-              
-                Ascending
-                Descending
-              
-            
-          
-        
+    <div className="space-y-6 p-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="search">Search:</Label>
+          <Input
+            id="search"
+            placeholder="Search cases and documents..."
+            value={searchTerm}
+            onChange={handleSearch}
+          />
+        </div>
 
-        
-          
-            
-              
-                Title
-                Description
-                Status
-                Created At
-              
-            
+        <div className="space-y-2">
+          <Label htmlFor="caseStatus">Case Status:</Label>
+          <Select
+            value={caseFilter}
+            onValueChange={handleCaseFilterChange}
+          >
+            <SelectTrigger id="caseStatus">
+              <SelectValue placeholder="Select Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="open">Open</SelectItem>
+              <SelectItem value="closed">Closed</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="documentType">Document Type:</Label>
+          <Select
+            value={documentFilter}
+            onValueChange={handleDocumentFilterChange}
+          >
+            <SelectTrigger id="documentType">
+              <SelectValue placeholder="Select Type" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="pdf">PDF</SelectItem>
+              <SelectItem value="word">Word</SelectItem>
+              <SelectItem value="excel">Excel</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="sortOrder">Sort Order:</Label>
+          <Select
+            value={sortOrder}
+            onValueChange={handleSortOrderChange}
+          >
+            <SelectTrigger id="sortOrder">
+              <SelectValue placeholder="Select Order" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="asc">Ascending</SelectItem>
+              <SelectItem value="desc">Descending</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="space-y-6">
+        <h2 className="text-2xl font-bold">Cases</h2>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Title</TableHead>
+              <TableHead>Description</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Created At</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {filteredCases.map((caseItem) => (
-              
-                \
-                  {caseItem.title}
-                
-                
-                  {caseItem.description}
-                
-                
-                  {caseItem.status}
-                
-                
+              <TableRow key={caseItem.id}>
+                <TableCell>{caseItem.title}</TableCell>
+                <TableCell>{caseItem.description}</TableCell>
+                <TableCell>{caseItem.status}</TableCell>
+                <TableCell>
                   {new Date(caseItem.created_at).toLocaleDateString()}
-                
-              
+                </TableCell>
+              </TableRow>
             ))}
-          
-        
+          </TableBody>
+        </Table>
 
-        
-          
-            
-              
-                Title
-                Description
-                Type
-                Created At
-              
-            
+        <h2 className="text-2xl font-bold">Documents</h2>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Title</TableHead>
+              <TableHead>Description</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Created At</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {filteredDocuments.map((document) => (
-              
-                
-                  {document.title}
-                
-                
-                  {document.description}
-                
-                
-                  {document.type}
-                
-                
+              <TableRow key={document.id}>
+                <TableCell>{document.title}</TableCell>
+                <TableCell>{document.description}</TableCell>
+                <TableCell>{document.type}</TableCell>
+                <TableCell>
                   {new Date(document.created_at).toLocaleDateString()}
-                
-              
+                </TableCell>
+              </TableRow>
             ))}
-          
-        
-      
-    </>
+          </TableBody>
+        </Table>
+      </div>
+    </div>
   )
 }

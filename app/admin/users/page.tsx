@@ -1,6 +1,6 @@
-export const dynamic = 'force-dynamic';
 "use client"
 
+export const dynamic = 'force-dynamic';
 import { useState, useEffect } from "react"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { Button } from "@/components/ui/button"

@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 import { middleware } from '../middleware'; // Adjust path if your middleware.ts is not in the root
 import { NextResponse, NextRequest } from 'next/server';
 

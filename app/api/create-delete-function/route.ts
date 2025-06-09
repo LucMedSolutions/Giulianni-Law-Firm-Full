@@ -1,11 +1,29 @@
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs"
 import { cookies } from "next/headers"
 import { NextResponse } from "next/server"
+import { hasPermissionServer } from "lib/permissions"
 
 export async function POST(request: Request) {
   try {
-    // Create a Supabase client with the service role key
     const cookieStore = cookies()
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore })
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const userId = session.user.id
+    const isAdmin = await hasPermissionServer(userId, "admin_access")
+
+    if (!isAdmin) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
+
+    // Create a Supabase client with the service role key
     const supabaseAdmin = createRouteHandlerClient(
       { cookies: () => cookieStore },
       {

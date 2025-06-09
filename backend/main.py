@@ -4,7 +4,7 @@
 
 import os # For environment variables
 from dotenv import load_dotenv # For loading .env file for local development
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware # For handling Cross-Origin Resource Sharing
 from pydantic import BaseModel # For defining data models for request bodies
@@ -15,11 +15,53 @@ from agents.task_generator import generate_legal_tasks # Still used by the (pote
 from agents.status import get_agent_status, update_task_status # update_task_status used for fallback error handling
 from supabase import create_client, Client as SupabaseClient # Added for direct Supabase interaction in endpoints
 
+# Imports for rate limiting
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 # Load environment variables from .env file (especially for local development)
 load_dotenv()
 
+# --- Configuration for Allowed File Extensions ---
+DEFAULT_EXTENSIONS_STR = ".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.txt,.csv"
+ALLOWED_EXTENSIONS_ENV = os.getenv("PARSE_DOCUMENT_ALLOWED_EXTENSIONS", DEFAULT_EXTENSIONS_STR)
+PROCESSABLE_EXTENSIONS = []
+for ext_item in ALLOWED_EXTENSIONS_ENV.split(','):
+    ext_item = ext_item.strip().lower()
+    if not ext_item.startswith('.'):
+        ext_item = '.' + ext_item
+    if ext_item and ext_item != '.': # Ensure not empty string or just a dot after strip
+        PROCESSABLE_EXTENSIONS.append(ext_item)
+
+if not PROCESSABLE_EXTENSIONS: # Fallback if parsing results in empty list (e.g. env var was " , ")
+    print(f"Warning: PARSE_DOCUMENT_ALLOWED_EXTENSIONS ('{ALLOWED_EXTENSIONS_ENV}') resulted in an empty list. Falling back to default extensions.")
+    PROCESSABLE_EXTENSIONS = [ext.strip().lower() for ext in DEFAULT_EXTENSIONS_STR.split(',') if ext.strip() and ext.strip() != '.']
+
+print(f"Using PROCESSABLE_EXTENSIONS: {PROCESSABLE_EXTENSIONS}")
+# --- End Configuration for Allowed File Extensions ---
+
+
 # Initialize the FastAPI application
 app = FastAPI(title="Giulianni Law Firm AI Backend")
+
+# --- Rate Limiting Setup ---
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# --- Security Headers Middleware ---
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # HSTS: Enforce HTTPS. Only enable in production if HTTPS is consistently available.
+    # Consider setting this via a reverse proxy (e.g., Nginx) in production.
+    # response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; object-src 'none'; frame-ancestors 'none';"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 # Configure CORS middleware
 # Fetch allowed origins from environment variable, defaulting for local development
@@ -56,24 +98,25 @@ class GenerateDocumentRequest(BaseModel):
 # crew_runner = get_crew_runner_instance() 
 
 @app.post("/parse-document/")
+@limiter.limit("15/minute")
 async def parse_document_endpoint(request: ParseDocumentRequest, background_tasks: BackgroundTasks):
     """
     Endpoint to initiate document parsing and AI processing.
     It receives document information and an optional user query, then starts a crew run.
-    Currently, the crew run is synchronous but is designed to be made asynchronous.
     """
     print(f"Received /parse-document/ request for file: {request.filename}, Path: {request.file_path}, Bucket: {request.bucket_name}, Query: {request.user_query}")
 
     # --- Server-Side Filename Validation ---
-    # TODO: This filename extension check is a basic validation.
-    # Robust server-side validation should be enforced by Supabase Storage policies/functions upon upload.
-    ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.png', '.txt', '.csv']
+    if not PROCESSABLE_EXTENSIONS: # Should not happen if fallback logic is correct, but as a safeguard
+        print("Critical Error: PROCESSABLE_EXTENSIONS list is empty. Blocking all uploads.")
+        raise HTTPException(status_code=500, detail="Server configuration error: No processable file extensions defined.")
+
     try:
         file_ext = os.path.splitext(request.filename)[1].lower()
         if not file_ext: # Check if extension could be extracted
              raise HTTPException(status_code=400, detail=f"Could not determine file extension for filename: {request.filename}. An extension is required.")
-        if file_ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(status_code=400, detail=f"Invalid file type based on filename extension: '{file_ext}'. Allowed extensions: {', '.join(ALLOWED_EXTENSIONS)}")
+        if file_ext not in PROCESSABLE_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Invalid file type based on filename extension: '{file_ext}'. Allowed extensions: {', '.join(PROCESSABLE_EXTENSIONS)}")
     except Exception as e: # Catch any error during filename processing
         print(f"Error during filename validation for {request.filename}: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid filename or extension: {request.filename}. Error: {str(e)}")
@@ -126,6 +169,7 @@ async def parse_document_endpoint(request: ParseDocumentRequest, background_task
     )
 
 @app.post("/generate-document/")
+@limiter.limit("10/minute")
 async def generate_document_endpoint(request: GenerateDocumentRequest, background_tasks: BackgroundTasks):
     """
     Endpoint to initiate AI-powered document generation.
@@ -218,6 +262,7 @@ async def generate_document_endpoint(request: GenerateDocumentRequest, backgroun
 
 
 @app.post("/generate-task/")
+@limiter.limit("30/minute") # Adding a general limit to this potentially deprecated endpoint
 async def generate_task_endpoint(task_request: dict): 
     """
     Endpoint to generate tasks based on document info and a user query.
@@ -237,6 +282,7 @@ async def generate_task_endpoint(task_request: dict):
     return JSONResponse(content=generated_tasks_response, status_code=200)
 
 @app.get("/agent-status/")
+@limiter.limit("60/minute") # Allow more frequent polling for status
 async def agent_status_endpoint(task_id: str):
     """
     Endpoint to retrieve the status of a specific agent task.
@@ -254,6 +300,7 @@ async def agent_status_endpoint(task_id: str):
     return JSONResponse(content=status_info, status_code=200)
 
 @app.post("/test-update-status/") 
+@limiter.limit("60/minute") # Limit test endpoint as well
 async def test_update_status_endpoint(task_id: str, status: str, details: str = ""):
     """
     A utility endpoint for testing the task status update mechanism.

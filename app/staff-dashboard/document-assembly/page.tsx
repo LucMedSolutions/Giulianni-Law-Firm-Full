@@ -38,6 +38,8 @@ const staticTemplates: Template[] = [
   // Add more templates here with their descriptions as they become available
 ];
 
+const MAX_POLLING_ATTEMPTS = 40; // 40 attempts * 3s interval = 120 seconds (2 minutes)
+
 export default function DocumentAssemblyPage() {
   const [selectedCaseId, setSelectedCaseId] = useState<string>('');
   const [clientIntakeData, setClientIntakeData] = useState<ClientIntakeData | null>(null);
@@ -57,6 +59,7 @@ export default function DocumentAssemblyPage() {
   
   const [casesList, setCasesList] = useState<Case[]>([]);
   const [templatesList] = useState<Template[]>(staticTemplates); 
+  const [isBackendConfigValid, setIsBackendConfigValid] = useState<boolean>(true);
 
   useEffect(() => {
     console.log("DocumentAssemblyPage: Component mounted. Fetching initial cases.");
@@ -86,6 +89,16 @@ export default function DocumentAssemblyPage() {
     };
     fetchCases();
   }, []);
+
+  useEffect(() => {
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL;
+    if (!backendUrl) {
+      const errorMsg = "Configuration Error: Backend API URL is not configured. Document generation feature is unavailable. Please contact support.";
+      console.error("DocumentAssemblyPage: Startup Check:", errorMsg);
+      setErrorMessage(errorMsg);
+      setIsBackendConfigValid(false);
+    }
+  }, []); // Empty dependency array ensures this runs only on mount
 
   useEffect(() => {
     if (!selectedCaseId) {
@@ -200,7 +213,7 @@ export default function DocumentAssemblyPage() {
     }
   };
   
-  const isGenerateButtonDisabled = isGenerating || !selectedCaseId || !selectedTemplateId || loadingData || !operatorInstructions.trim();
+  const isGenerateButtonDisabled = !isBackendConfigValid || isGenerating || !selectedCaseId || !selectedTemplateId || loadingData || !operatorInstructions.trim();
 
   const fetchTaskStatus = async (currentTaskId: string) => {
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL;
@@ -259,15 +272,24 @@ export default function DocumentAssemblyPage() {
       return;
     }
     
-    console.log(`DocumentAssemblyPage: Starting polling for Task ID: ${taskId}. Current status: ${currentTaskStatus}`);
+    let attempts = 0; // Local to this effect invocation
+    console.log(`DocumentAssemblyPage: Starting polling for Task ID: ${taskId}. Current status: ${currentTaskStatus}, Max attempts: ${MAX_POLLING_ATTEMPTS}`);
     const intervalId = setInterval(async () => {
-      console.log(`DocumentAssemblyPage: Interval: Polling for task ${taskId}.`);
+      console.log(`DocumentAssemblyPage: Interval: Polling for task ${taskId}, Attempt: ${attempts + 1}`);
       const shouldStop = await fetchTaskStatus(taskId);
+      attempts++;
+
       if (shouldStop) {
         console.log(`DocumentAssemblyPage: Interval: Polling determined to stop for task ${taskId}. Clearing interval.`);
         clearInterval(intervalId);
+      } else if (attempts >= MAX_POLLING_ATTEMPTS) {
+        console.warn(`DocumentAssemblyPage: Polling timeout for task ${taskId} after ${MAX_POLLING_ATTEMPTS} attempts.`);
+        setErrorMessage(`Task status polling timed out after ${Math.round(MAX_POLLING_ATTEMPTS * 3 / 60)} minutes. The task may still be processing. Please check back later or contact support.`);
+        setStatusMessage(null); // Clear any ongoing status message
+        setCurrentTaskStatus('error'); // Set status to error to display the error message
+        clearInterval(intervalId);
       }
-    }, 3000);
+    }, 3000); // Keep existing interval
     
     return () => {
       console.log(`DocumentAssemblyPage: useEffect cleanup for Task ID: ${taskId}. Clearing interval.`);

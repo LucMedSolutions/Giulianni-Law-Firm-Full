@@ -16,32 +16,50 @@ This provides server-side validation, acting as a safeguard even if client-side 
 
 ## Configuration
 
-The function's behavior can be configured by modifying these constants at the top of `supabase/functions/validate-upload/index.ts`:
+The function's behavior is primarily configured through environment variables, which can be set in your Supabase project dashboard under `Project Settings` > `Functions`, then selecting the `validate-upload` function and navigating to its "Environment variables" or "Secrets" section.
 
--   `ALLOWED_MIME_TYPES`: An array of strings representing permitted MIME types.
-    -   Default: `['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png', 'text/plain', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv']`
--   `MAX_FILE_SIZE_BYTES`: Maximum allowed file size in bytes.
-    -   Default: `15 * 1024 * 1024` (15MB)
--   `TARGET_BUCKETS`: An array of bucket names (strings) that this function should validate. Files uploaded to other buckets will be ignored.
-    -   Default: `['documents']` (You might want to add `'generated_documents'` or other relevant private buckets)
+### Environment Variables for Validation Logic
+
+These variables control the validation parameters:
+
+*   **`VALIDATE_UPLOAD_ALLOWED_MIME_TYPES`**
+    *   **Description:** A comma-separated string of allowed MIME types for uploaded files.
+    *   **Example:** `application/pdf,image/png,image/jpeg,text/plain`
+    *   **Default:** If not set, a predefined list is used:
+        ```
+        application/pdf, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, image/jpeg, image/png, text/plain, application/vnd.ms-excel, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/csv
+        ```
+    *   **Notes:** Ensure MIME types are standard and correctly formatted. Leading/trailing whitespace will be trimmed. If this variable is set to an empty string or only contains delimiters (like `, , ,`), it might result in no MIME types being allowed, effectively blocking all uploads based on type.
+
+*   **`VALIDATE_UPLOAD_MAX_FILE_SIZE_MB`**
+    *   **Description:** The maximum allowed file size in Megabytes (MB). The function will convert this value to bytes.
+    *   **Example:** `20` (for 20MB)
+    *   **Default:** `15` (for 15MB)
+    *   **Notes:** Only positive integer values are accepted. If an invalid value (e.g., non-numeric, zero, or negative) is provided, the function will revert to the default size.
+
+*   **`VALIDATE_UPLOAD_TARGET_BUCKETS`**
+    *   **Description:** A comma-separated string of Supabase Storage bucket names that this function should validate. Files uploaded to other buckets will be ignored by this validation function.
+    *   **Example:** `documents,proof_of_identity,generated_case_files`
+    *   **Default:** `documents`
+    *   **Notes:** Ensure bucket names match exactly those in your Supabase Storage. Leading/trailing whitespace will be trimmed. If this variable is set but results in an empty list (e.g., an empty string or only delimiters), no buckets will be targeted for validation.
+
+### Essential Secrets for Supabase Admin Client
+
+The Edge Function also requires the following secrets to be set to allow it to initialize a Supabase admin client. This client is used for privileged actions like deleting invalid files from storage. These are typically set in the "Secrets" section of your function's settings in the Supabase dashboard.
+
+*   **`SUPABASE_URL`**: Your project's Supabase URL (e.g., `https://<your-project-ref>.supabase.co`). This is often available as `NEXT_PUBLIC_SUPABASE_URL` in frontend applications.
+*   **`SUPABASE_SERVICE_KEY`**: Your project's `service_role` key. This key has admin privileges and must be kept secret and secure.
 
 ## Prerequisites
 
 1.  **Supabase Project:** You need an active Supabase project.
 2.  **Supabase CLI:** Ensure you have the Supabase CLI installed and configured for your project.
-3.  **Private Storage Buckets:** This function is primarily intended for private buckets where you want to enforce strict server-side validation. For public buckets, client-side validation might be sufficient, but server-side can still be a good defense. The `documents` bucket (and any other `TARGET_BUCKETS`) should be configured as **private**.
+3.  **Private Storage Buckets:** This function is primarily intended for private buckets where you want to enforce strict server-side validation. For public buckets, client-side validation might be sufficient, but server-side can still be a good defense. The buckets listed in `VALIDATE_UPLOAD_TARGET_BUCKETS` should generally be configured as **private**.
 
 ## Deployment
 
-1.  **Write the Function Code:** Ensure the code in `supabase/functions/validate-upload/index.ts` is as provided or customized to your needs.
-2.  **Set Environment Variables (Secrets):**
-    This Edge Function requires the following secrets to be set in your Supabase project dashboard to allow it to initialize a Supabase admin client for deleting invalid files:
-    *   Go to your Supabase Project Dashboard.
-    *   Navigate to `Project Settings` > `Functions`.
-    *   Select the `validate-upload` function (it will appear after first deployment attempt or can be pre-configured).
-    *   Under the "Secrets" section, add the following:
-        *   `SUPABASE_URL`: Your project's Supabase URL (e.g., `https://<your-project-ref>.supabase.co`). This is the same as `NEXT_PUBLIC_SUPABASE_URL`.
-        *   `SUPABASE_SERVICE_KEY`: Your project's `service_role` key. This key has admin privileges and should be kept secret.
+1.  **Write/Customize the Function Code:** Ensure the code in `supabase/functions/validate-upload/index.ts` is as provided or customized to your needs.
+2.  **Set Environment Variables & Secrets:** Configure the environment variables and secrets as described in the "Configuration" section within your Supabase project dashboard.
 3.  **Deploy the Function:**
     Open your terminal, navigate to your project's root directory (where your `supabase` folder is), and run:
     ```bash
@@ -69,10 +87,10 @@ The `validate-upload` Edge Function is designed to be triggered by a Supabase Da
         (Replace `<your-project-ref>` with your actual Supabase project reference ID).
     *   **HTTP Headers:**
         *   Add a header for `Content-Type` with value `application/json`.
-        *   Add an `Authorization` header: `Bearer <your_anon_key_or_service_key>`.
-            *   You can use your project's `anon` key if your Edge Function does not have specific authorization checks beyond this.
-            *   If you want to secure the Edge Function endpoint itself (not implemented in the provided code but possible), you'd use a secret token or the `service_role` key here and verify it in the function. For simplicity, using the `anon` key is often sufficient as the function itself uses the `service_role` key (from secrets) for privileged actions like file deletion.
-            *   **Using `service_role` key for webhook Authorization**: This is a secure option if you want to ensure only Supabase itself can trigger the function. The Edge Function itself doesn't currently validate this incoming bearer token, but it's good practice to send it.
+        *   Add an `Authorization` header: `Bearer <your_webhook_secret>`.
+            *   **Recommended:** Use your project's `service_role` key as the `<your_webhook_secret>`. This is the most secure option, ensuring that only Supabase (via its trusted webhook system) can trigger your Edge Function.
+            *   **Alternative:** For enhanced security, you can generate a unique, strong secret token (a long random string) specifically for this webhook. Store this secret securely and use it as the `Bearer` token. Your Edge Function code would then need to be modified to verify this token (this verification is not part of the default `validate-upload` function but is a recommended customization for production).
+            *   **Less Secure Fallback (Use with Caution):** While you *can* use your project's `anon` key, this is generally not recommended for webhook authentication if the Edge Function URL could be discovered, as the `anon` key is public. Using it might be acceptable only in tightly controlled environments or for less critical functions where the risk is understood. The `validate-upload` function itself uses its own `SUPABASE_SERVICE_KEY` secret (configured as an environment variable for the Edge Function) for performing privileged actions like file deletion, regardless of the webhook authorization method.
 
 8.  Click **Create webhook**.
 
@@ -83,13 +101,13 @@ Now, whenever a new file is uploaded to any of your Supabase Storage buckets, th
 1.  A new file is uploaded to a Supabase Storage bucket.
 2.  If the upload is to any bucket, the `INSERT` event on `storage.objects` triggers the configured Database Webhook.
 3.  The webhook sends a POST request with the new object's record (including metadata like `bucket_id`, `name`, `metadata.mimetype`, `metadata.size`) to the `validate-upload` Edge Function.
-4.  The Edge Function checks if the `bucket_id` is in its `TARGET_BUCKETS` list.
-5.  If targeted, it validates the file's `mimetype` and `size` against `ALLOWED_MIME_TYPES` and `MAX_FILE_SIZE_BYTES`.
+4.  The Edge Function checks if the `bucket_id` is in its `TARGET_BUCKETS` list (configured by `VALIDATE_UPLOAD_TARGET_BUCKETS`).
+5.  If targeted, it validates the file's `mimetype` and `size` against `ALLOWED_MIME_TYPES` (from `VALIDATE_UPLOAD_ALLOWED_MIME_TYPES`) and `MAX_FILE_SIZE_BYTES` (from `VALIDATE_UPLOAD_MAX_FILE_SIZE_MB`).
 6.  If validation fails:
     *   The function logs the validation error.
     *   It initializes a Supabase admin client using the `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (from its environment secrets).
     *   It attempts to delete the invalid file from storage using `supabaseAdmin.storage.from(bucketId).remove([objectPath])`.
     *   It returns a response indicating the failure and deletion (e.g., HTTP 400).
-7.  If validation passes, or if the bucket is not targeted, the function returns a success response (HTTP 200).
+7.  If validation passes, or if the bucket is not targeted, the function returns a success response (HTTP 200 or 204).
 
 This server-side validation helps maintain the integrity and security of your file storage.

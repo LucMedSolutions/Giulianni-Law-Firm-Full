@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, ChangeEvent } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useParams } from "next/navigation"
 import { createClientComponentClient, SupabaseClient } from "@supabase/auth-helpers-nextjs"
 import type { RealtimeChannel } from "@supabase/supabase-js"
 import { v4 as uuidv4 } from "uuid"
@@ -12,7 +12,8 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Send, Paperclip, User } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
-export default function ClientChat() {
+// TODO: Potentially use caseId from params to filter/pre-select contact
+export default function StaffChat() {
   const [contacts, setContacts] = useState<any[]>([])
   const [selectedContact, setSelectedContact] = useState<any | null>(null)
   const [messages, setMessages] = useState<any[]>([])
@@ -22,6 +23,7 @@ export default function ClientChat() {
   const [sendingMessage, setSendingMessage] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const router = useRouter()
+  const params = useParams() // For caseId, if needed later
   const supabase = createClientComponentClient()
   const { toast } = useToast()
   const [currentUser, setCurrentUser] = useState<any | null>(null)
@@ -29,7 +31,6 @@ export default function ClientChat() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [uploadingFile, setUploadingFile] = useState(false)
-
 
   useEffect(() => {
     const fetchInitialData = async () => {
@@ -44,7 +45,7 @@ export default function ClientChat() {
 
         if (sessionError) throw sessionError
         if (!session) {
-          router.push("/")
+          router.push("/") // Redirect to login if not authenticated
           return
         }
 
@@ -55,27 +56,31 @@ export default function ClientChat() {
           .maybeSingle()
 
         if (userError) throw userError
-        if (!user) throw new Error("User profile not found")
-        if (user.role !== "client") {
+        if (!user) throw new Error("User profile not found.")
+
+        // Authorize staff/admin
+        if (user.role !== "staff" && user.role !== "admin" && user.role !== "attorney" && user.role !== "paralegal" && user.role !== "secretary") {
           await supabase.auth.signOut()
-          toast({ title: "Access Denied", description: "You are not authorized for this page.", variant: "destructive"})
+          toast({ title: "Access Denied", description: "You are not authorized to view this page.", variant: "destructive" })
           router.push("/")
           return
         }
         setCurrentUser(user)
 
-        // Get staff users (attorneys, paralegals, secretaries) as contacts
-        const { data: staffUsers, error: staffError } = await supabase
+        // Fetch clients as contacts for staff
+        const { data: clientUsers, error: clientsError } = await supabase
           .from("users")
           .select("id, full_name, role")
-          .in("role", ["attorney", "paralegal", "secretary", "admin"]) // Added admin as potential contact
+          .eq("role", "client") // Staff sees clients
           .order("full_name")
 
-        if (staffError) throw staffError
+        if (clientsError) throw clientsError
 
-        const contactsList = staffUsers || []
+        const contactsList = clientUsers || []
         setContacts(contactsList)
 
+        // TODO: Later, use caseId from params to select a contact if provided
+        // For now, select the first contact if available
         if (contactsList.length > 0) {
           setSelectedContact(contactsList[0])
         }
@@ -96,6 +101,7 @@ export default function ClientChat() {
       fetchMessages().then(() => {
         // Subscribe to real-time messages after initial fetch
         if (channelRef.current) {
+          // Clean up previous channel if it exists
           channelRef.current.unsubscribe()
           supabase.removeChannel(channelRef.current)
         }
@@ -108,11 +114,11 @@ export default function ClientChat() {
               event: "INSERT",
               schema: "public",
               table: "chat_messages",
-              filter: `recipient_id=eq.${currentUser.id}`, // Messages sent to current user
+              filter: `recipient_id=eq.${currentUser.id}`, // Messages sent to current staff user
             },
             async (payload) => {
               const newMessage = payload.new as any
-              // Ensure the message is from the selected contact
+              // Ensure the message is from the selected client contact
               if (newMessage.sender_id === selectedContact.id) {
                 setMessages((prevMessages) => {
                   // Avoid adding duplicate messages
@@ -120,7 +126,7 @@ export default function ClientChat() {
                     return prevMessages;
                   }
                   return [...prevMessages, newMessage]
-                })
+                });
 
                 // Mark as read if this chat is active
                 if (!newMessage.is_read) {
@@ -134,7 +140,7 @@ export default function ClientChat() {
           )
           .subscribe((status, err) => {
             if (status === 'SUBSCRIBED') {
-              console.log('Subscribed to chat messages for client:', currentUser.id);
+              console.log('Subscribed to chat messages for staff:', currentUser.id);
             }
             if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
               console.error('Subscription error:', err);
@@ -142,20 +148,20 @@ export default function ClientChat() {
             }
           });
         channelRef.current = newChannel;
-      })
+      });
     }
 
     // Cleanup subscription on component unmount or when selectedContact/currentUser changes
     return () => {
       if (channelRef.current) {
-        channelRef.current.unsubscribe()
-        supabase.removeChannel(channelRef.current)
+        channelRef.current.unsubscribe();
+        supabase.removeChannel(channelRef.current);
         channelRef.current = null;
-        console.log('Unsubscribed from chat messages for client:', currentUser?.id);
+        console.log('Unsubscribed from chat messages for staff:', currentUser?.id);
       }
-    }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedContact, currentUser, supabase, toast])
+  }, [selectedContact, currentUser, supabase, toast]);
 
   useEffect(() => {
     scrollToBottom()
@@ -165,7 +171,6 @@ export default function ClientChat() {
     if (!selectedContact || !currentUser) return
 
     try {
-      // Get chat messages between current user and selected contact
       const { data: messagesData, error: messagesError } = await supabase
         .from("chat_messages")
         .select("id, content, created_at, sender_id, recipient_id, is_read")
@@ -178,7 +183,7 @@ export default function ClientChat() {
 
       setMessages(messagesData || [])
 
-      // Mark initially fetched unread messages as read
+      // Mark initially fetched unread messages as read (messages sent by selectedContact to currentUser)
       const unreadMessages = messagesData?.filter(
         (msg) => !msg.is_read && msg.recipient_id === currentUser.id && msg.sender_id === selectedContact.id
       )
@@ -189,7 +194,7 @@ export default function ClientChat() {
       }
     } catch (err: any) {
       console.error("Error fetching messages:", err)
-      // Toast is handled in the subscription effect for ongoing errors
+      // Toast for fetch errors, subscription errors are handled in the subscription callback
       toast({ title: "Error", description: err.message || "Failed to load messages.", variant: "destructive" })
     }
   }
@@ -232,8 +237,8 @@ export default function ClientChat() {
         .from("chat_messages")
         .insert({
           content: messageContent,
-          sender_id: currentUser.id,
-          recipient_id: selectedContact.id,
+          sender_id: currentUser.id, // Staff's ID
+          recipient_id: selectedContact.id, // Client's ID
           is_read: false,
           attachment_url: attachmentUrl,
           attachment_filename: attachmentFilename,
@@ -246,7 +251,7 @@ export default function ClientChat() {
         setMessages((prevMessages) => [...prevMessages, newMessageData[0]])
       }
       setNewMessage("")
-      // selectedFile is already cleared if upload happened
+      // selectedFile is already cleared
     } catch (err: any) {
       console.error("Error sending message or uploading file:", err)
       toast({
@@ -260,10 +265,9 @@ export default function ClientChat() {
     }
   }
 
-  const handleFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
+   const handleFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
       const file = event.target.files[0]
-      // Basic file type/size validation (optional)
       if (file.size > 10 * 1024 * 1024) { // Max 10MB
         toast({ title: "File too large", description: "Please select a file smaller than 10MB.", variant: "destructive"})
         return;
@@ -283,6 +287,7 @@ export default function ClientChat() {
   }
 
   const getInitials = (name: string) => {
+    if (!name) return "?";
     return name
       .split(" ")
       .map((n) => n[0])
@@ -311,7 +316,7 @@ export default function ClientChat() {
           <Card>
             <CardContent className="p-6 text-center">
               <p className="text-red-500">{error}</p>
-              <Button onClick={() => router.push("/client-dashboard")} className="mt-4">
+              <Button onClick={() => router.push("/staff-dashboard")} className="mt-4">
                 Return to Dashboard
               </Button>
             </CardContent>
@@ -326,7 +331,7 @@ export default function ClientChat() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200 p-4">
         <div className="flex justify-between items-center max-w-7xl mx-auto">
-          <h1 className="text-xl font-bold">Chat</h1>
+          <h1 className="text-xl font-bold">Staff Chat</h1>
         </div>
       </header>
 
@@ -334,18 +339,18 @@ export default function ClientChat() {
       <main className="flex-1 p-6">
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            {/* Contacts */}
+            {/* Contacts (Clients) */}
             <div className="md:col-span-1">
               <Card className="h-[calc(100vh-220px)] flex flex-col">
                 <CardHeader className="pb-2">
-                  <CardTitle>Contacts</CardTitle>
+                  <CardTitle>Clients</CardTitle>
                 </CardHeader>
                 <CardContent className="flex-1 overflow-auto p-0">
                   {contacts.length === 0 ? (
                     <div className="text-center py-8 px-4">
                       <User className="h-12 w-12 mx-auto text-gray-400" />
-                      <h3 className="mt-2 text-lg font-medium text-gray-900">No contacts found</h3>
-                      <p className="mt-1 text-sm text-gray-500">You don't have any contacts available for chat.</p>
+                      <h3 className="mt-2 text-lg font-medium text-gray-900">No clients found</h3>
+                      <p className="mt-1 text-sm text-gray-500">There are no clients available for chat.</p>
                     </div>
                   ) : (
                     <ul className="divide-y">
@@ -363,7 +368,7 @@ export default function ClientChat() {
                             </Avatar>
                             <div>
                               <p className="text-sm font-medium text-gray-900">{contact.full_name}</p>
-                              <p className="text-xs text-gray-500 capitalize">{contact.role}</p>
+                              {/* <p className="text-xs text-gray-500 capitalize">{contact.role}</p> */}
                             </div>
                           </div>
                         </li>
@@ -374,7 +379,7 @@ export default function ClientChat() {
               </Card>
             </div>
 
-            {/* Chat */}
+            {/* Chat Area */}
             <div className="md:col-span-3">
               <Card className="h-[calc(100vh-220px)] flex flex-col">
                 {selectedContact && currentUser ? (
@@ -386,7 +391,7 @@ export default function ClientChat() {
                         </Avatar>
                         <div>
                           <CardTitle>{selectedContact.full_name}</CardTitle>
-                          <p className="text-sm text-gray-500 capitalize">{selectedContact.role}</p>
+                          <p className="text-sm text-gray-500 capitalize">Client</p>
                         </div>
                       </div>
                     </CardHeader>
@@ -454,10 +459,10 @@ export default function ClientChat() {
                       )}
                     </CardContent>
                     <div className="p-4 border-t">
-                       {selectedFile && (
+                      {selectedFile && (
                         <div className="mb-2 text-sm text-gray-600">
                           Selected file: {selectedFile.name} ({Math.round(selectedFile.size / 1024)} KB)
-                          <Button variant="ghost" size="sm" onClick={() => setSelectedFile(null)} className="ml-2">Clear</Button>
+                           <Button variant="ghost" size="sm" onClick={() => setSelectedFile(null)} className="ml-2">Clear</Button>
                         </div>
                       )}
                       <div className="flex items-end gap-2">
@@ -502,8 +507,8 @@ export default function ClientChat() {
                   <CardContent className="flex-1 flex items-center justify-center">
                     <div className="text-center">
                       <User className="h-12 w-12 mx-auto text-gray-400" />
-                      <h3 className="mt-2 text-lg font-medium text-gray-900">Select a Staff Member</h3>
-                      <p className="mt-1 text-sm text-gray-500">Choose a staff member from the list to start chatting.</p>
+                      <h3 className="mt-2 text-lg font-medium text-gray-900">Select a client</h3>
+                      <p className="mt-1 text-sm text-gray-500">Choose a client from the list to start chatting.</p>
                     </div>
                   </CardContent>
                 )}
